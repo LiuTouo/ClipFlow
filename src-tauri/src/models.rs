@@ -75,7 +75,9 @@ impl Default for AppConfig {
             image_memory_budget_mb: 50,
             image_size_limit_mb: 10,
             hotkey: "Ctrl+Shift+V".to_string(),
-            startup: true,
+            // Off by default: autostart is opt-in via Settings, which creates
+            // the shell:startup shortcut at toggle time.
+            startup: false,
             persist: false,
             exclusion_list: vec![
                 "1Password.exe".to_string(),
