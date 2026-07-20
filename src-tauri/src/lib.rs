@@ -169,18 +169,7 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
     });
 }
 
-fn log(msg: &str) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    let log_path = std::env::current_exe()
-        .unwrap_or_default()
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("clipflow.log");
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_path) {
-        let _ = writeln!(f, "{}", msg);
-    }
-}
+fn log(_msg: &str) {}
 
 fn show_panel(app: &tauri::AppHandle) {
     use tauri::WebviewUrl;
