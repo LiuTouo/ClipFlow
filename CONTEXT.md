@@ -52,7 +52,7 @@ The ordered, in-memory collection of all Clips. Managed by the Rust backend, exp
 
 **Capacity:** dual limit for images — count (`image_count_limit`, default 10) and memory (`image_memory_budget`, default 50 MB). Text: max 100 Clips (configurable). FilePaths Clips count toward text. Eviction is oldest-unpinned-first on whichever image limit is breached first.
 
-**Persistence:** in-memory by default. Optional SQLite persistence via `--persist` flag.
+**Persistence:** in-memory by default. Optional SQLite write-through persistence via the `persist` config option (Settings checkbox). The database (`clipflow.db`) lives next to the executable. When enabled, every capture/delete/pin/eviction is mirrored to SQLite and the History is reloaded on startup. Disabling persistence deletes `clipflow.db`.
 
 ### Pin
 A marker on a Clip that keeps it at the top of the History, above a visual divider.
@@ -68,7 +68,7 @@ The global keyboard shortcut `Ctrl+Shift+V` (default, configurable) that opens t
 **Conflict detection:** on startup and on every hotkey change in Settings, registration is attempted immediately. If `RegisterHotKey` fails (another application owns the combination), the Settings window opens automatically with an inline error: "This combination is already in use." The user must choose a different combination before the panel can be invoked.
 
 ### Panel
-The floating WebView window that displays the History. Only exists while invoked — destroyed on close so WebView memory is fully released.
+The floating WebView window that displays the History. Created on first invocation, then reused via hide/show — dismissal hides the window rather than destroying it, so re-opening is instant.
 
 **Open:** triggered by the Hotkey (`Ctrl+Shift+V`).
 
