@@ -371,4 +371,8 @@ window.addEventListener("blur", () => {
 });
 
 // === Initialize ===
-window.addEventListener("DOMContentLoaded", init);
+window.addEventListener("DOMContentLoaded", () => {
+  console.log("[ClipFlow UI] DOM ready");
+  init();
+  console.log("[ClipFlow UI] init done");
+});

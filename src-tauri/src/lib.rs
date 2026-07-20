@@ -12,7 +12,6 @@ struct AppState {
     config: Arc<Mutex<AppConfig>>,
     monitor_running: Arc<Mutex<bool>>,
     last_deleted: Arc<Mutex<Option<Clip>>>,
-    panel_visible: Arc<Mutex<bool>>,
 }
 
 #[tauri::command]
@@ -61,19 +60,9 @@ fn get_config(state: tauri::State<AppState>) -> AppConfig {
 
 #[tauri::command]
 fn update_config(new_config: AppConfig, state: tauri::State<AppState>) -> Result<(), String> {
-    let old_hotkey = {
-        let config = state.config.lock().unwrap();
-        config.hotkey.clone()
-    };
     new_config.save()?;
-    let new_hotkey = new_config.hotkey.clone();
     let mut config = state.config.lock().unwrap();
     *config = new_config;
-    // If hotkey changed, re-register
-    if old_hotkey != new_hotkey {
-        // Unregister old, register new
-        // Handled by frontend calling back after settings save + re-invoking hotkey setup
-    }
     Ok(())
 }
 
@@ -180,52 +169,85 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
     });
 }
 
-fn toggle_panel(
-    app: &tauri::AppHandle,
-    history: &Arc<Mutex<HistoryStore>>,
-    config: &Arc<Mutex<AppConfig>>,
-    monitor_running: &Arc<Mutex<bool>>,
-    panel_visible: &Arc<Mutex<bool>>,
-) {
-    let mut visible = panel_visible.lock().unwrap();
+fn log(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let log_path = std::env::current_exe()
+        .unwrap_or_default()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("clipflow.log");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_path) {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
 
-    if *visible {
-        // Close panel
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.hide();
-        }
-        *visible = false;
+fn show_panel(app: &tauri::AppHandle) {
+    use tauri::WebviewUrl;
+    use tauri::WebviewWindowBuilder;
+
+    log("[ClipFlow] show_panel() called");
+    if let Some(window) = app.get_webview_window("main") {
+        log("[ClipFlow] panel exists, showing");
+        let _ = window.show();
+        let _ = window.set_focus();
     } else {
-        // Open panel
-        use tauri::WebviewUrl;
-        use tauri::WebviewWindowBuilder;
-
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
-            *visible = true;
-        } else {
-            let _main_window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                .title("ClipFlow")
-                .inner_size(420.0, 540.0)
-                .decorations(false)
-                .resizable(false)
-                .skip_taskbar(true)
-                .visible(true)
-                .build();
-            *visible = true;
+        log("[ClipFlow] creating new panel window");
+        match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            .title("ClipFlow")
+            .inner_size(420.0, 540.0)
+            .decorations(false)
+            .resizable(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .visible(true)
+            .focused(true)
+            .center()
+            .build()
+        {
+            Ok(w) => {
+                log(&format!("[ClipFlow] panel created: {:?}", w.label()));
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            Err(e) => {
+                log(&format!("[ClipFlow] panel creation failed: {:?}", e));
+            }
         }
     }
 }
 
+fn hide_panel(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(hidden: bool) {
+pub fn run(_hidden: bool) {
     let config = AppConfig::load();
     let history = Arc::new(Mutex::new(HistoryStore::new()));
     let config_store = Arc::new(Mutex::new(config.clone()));
     let monitor_running = Arc::new(Mutex::new(true));
     let last_deleted = Arc::new(Mutex::new(None));
-    let panel_visible = Arc::new(Mutex::new(false));
+
+    log("[ClipFlow] run() called");
+
+    // Override resource_dir to look in exe directory for portable mode
+    let exe_dir = std::env::current_exe()
+        .unwrap_or_default()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let frontend_dist = exe_dir.join("dist");
+    std::env::set_var("TAURI_FRONTEND_DIST", &frontend_dist);
+    log(&format!("[ClipFlow] frontend dist: {:?}", frontend_dist));
+
+    // Auto-create assets dir if missing
+    let dst_assets = frontend_dist.join("assets");
+    if !dst_assets.exists() {
+        std::fs::create_dir_all(&dst_assets).ok();
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -235,48 +257,55 @@ pub fn run(hidden: bool) {
             config: config_store.clone(),
             monitor_running: monitor_running.clone(),
             last_deleted: last_deleted.clone(),
-            panel_visible: panel_visible.clone(),
         })
         .setup(move |app| {
+            let resource_dir = app.path().resource_dir().unwrap_or_default();
+            log(&format!("[ClipFlow] resource_dir: {:?}", resource_dir));
+            log("[ClipFlow] setup closure entered");
             let handle = app.handle().clone();
 
-            // Register global hotkey from config
+            log("[ClipFlow] registering hotkey");
+            // Register global hotkey
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
             let hotkey_str = {
                 let config = config_store.lock().unwrap();
                 config.hotkey.clone()
             };
 
-            let handle_ref = handle.clone();
-            let history_ref = history.clone();
-            let config_ref = config_store.clone();
-            let monitor_ref = monitor_running.clone();
-            let panel_ref = panel_visible.clone();
+            let handle_clone = handle.clone();
+            let handle_toggle = handle.clone();
 
             if let Ok(shortcut) = hotkey_str.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-                let result = app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
+                let _ = app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
                     if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        toggle_panel(
-                            &handle_ref,
-                            &history_ref,
-                            &config_ref,
-                            &monitor_ref,
-                            &panel_ref,
-                        );
+                        if handle_toggle.get_webview_window("main")
+                            .map(|w| w.is_visible().unwrap_or(false))
+                            .unwrap_or(false)
+                        {
+                            hide_panel(&handle_toggle);
+                        } else {
+                            show_panel(&handle_toggle);
+                        }
                     }
                 });
-                if let Err(e) = result {
-                    eprintln!("Failed to register hotkey '{}': {:?}", hotkey_str, e);
-                    // Hotkey conflict — could show settings window here
-                }
-            } else {
-                eprintln!("Invalid hotkey in config: {}", hotkey_str);
             }
 
+            // Also register Ctrl+Shift+I as fallback debug shortcut
+            if let Ok(debug_sc) = "Ctrl+Shift+I".parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                let handle_debug = handle.clone();
+                let _ = app.global_shortcut().on_shortcut(debug_sc, move |_app, _sc, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        show_panel(&handle_debug);
+                    }
+                });
+                log("[ClipFlow] debug shortcut Ctrl+Shift+I registered");
+            }
+
+            log("[ClipFlow] hotkey registered, starting tray setup");
             // Start clipboard monitor
             start_monitor(handle.clone(), history.clone(), config_store.clone(), monitor_running.clone());
 
-            // Build tray menu
+            // Build tray (programmatic only — no trayIcon in config)
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -293,8 +322,10 @@ pub fn run(hidden: bool) {
                 .item(&quit_item)
                 .build()?;
 
+            let icon = app.default_window_icon().cloned().unwrap();
+
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(icon)
                 .tooltip("ClipFlow")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -317,17 +348,8 @@ pub fn run(hidden: bool) {
                         _ => {}
                     }
                 })
-                .on_tray_icon_event(|_tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        // Left click placeholder
-                    }
-                })
                 .build(app)?;
+            log("[ClipFlow] tray built successfully");
 
             Ok(())
         })
@@ -354,17 +376,23 @@ fn open_settings_window(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
 
+    log("[ClipFlow] open_settings_window() called");
     if let Some(window) = app.get_webview_window("settings") {
+        log("[ClipFlow] settings exists, focusing");
         window.set_focus()?;
         return Ok(());
     }
 
-    let _window = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+    log("[ClipFlow] creating settings window");
+    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("ClipFlow Settings")
         .inner_size(500.0, 600.0)
         .resizable(false)
+        .visible(true)
+        .center()
         .build()?;
 
+    log("[ClipFlow] settings window created");
     Ok(())
 }
 
@@ -377,10 +405,11 @@ fn open_about_dialog(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
         return Ok(());
     }
 
-    let _window = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("about.html".into()))
+    let _ = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("about.html".into()))
         .title("About ClipFlow")
         .inner_size(360.0, 320.0)
         .resizable(false)
+        .center()
         .build()?;
 
     Ok(())

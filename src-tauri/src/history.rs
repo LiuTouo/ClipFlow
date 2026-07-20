@@ -9,7 +9,7 @@ impl HistoryStore {
         Self { clips: Vec::with_capacity(128) }
     }
 
-    pub fn insert(&mut self, mut clip: Clip, config: &AppConfig) -> Clip {
+    pub fn insert(&mut self, clip: Clip, config: &AppConfig) -> Clip {
         if let Some(existing) = self.clips.iter_mut().find(|c| c.content_hash == clip.content_hash) {
             existing.captured_at = clip.captured_at;
             existing.source_exe = clip.source_exe.clone();

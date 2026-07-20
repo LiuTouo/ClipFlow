@@ -10,15 +10,10 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [],
     "security": {
       "csp": null
-    },
-    "trayIcon": {
-      "iconPath": "icons/icon.ico",
-      "iconAsTemplate": false,
-      "tooltip": "ClipFlow"
     }
   },
   "bundle": {
@@ -32,9 +27,5 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {
-    "global-shortcut": {
-      "shortcuts": []
-    }
-  }
+  "plugins": {}
 }
