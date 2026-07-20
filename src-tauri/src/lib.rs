@@ -348,6 +348,11 @@ fn show_panel(app: &tauri::AppHandle) {
             .inner_size(480.0, 620.0)
             .decorations(false)
             .transparent(true)
+            // Disable the DWM undecorated shadow: tao defaults it on, which
+            // draws a 1px white border + shadow around the whole window rect
+            // instead of following the rounded panel. The panel has its own
+            // CSS drop shadow.
+            .shadow(false)
             .resizable(false)
             .skip_taskbar(true)
             .always_on_top(true)
