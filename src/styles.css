@@ -24,7 +24,7 @@
   --warning-bg: rgba(245, 158, 11, 0.1);
   --shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
-  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-bg: rgba(255, 255, 255, 0.96);
   --glass-border: rgba(255, 255, 255, 0.5);
   --divider-color: rgba(0, 0, 0, 0.06);
 }
@@ -49,7 +49,7 @@
     --warning-bg: rgba(251, 191, 36, 0.1);
     --shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-    --glass-bg: rgba(28, 28, 30, 0.85);
+    --glass-bg: rgba(28, 28, 30, 0.96);
     --glass-border: rgba(255, 255, 255, 0.06);
     --divider-color: rgba(255, 255, 255, 0.06);
   }
@@ -381,6 +381,35 @@ html, body {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* === Image Hover Preview ===
+   Floating larger preview shown while hovering an image Clip row. */
+.clip-item .hover-preview {
+  display: none;
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  padding: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.clip-item:hover .hover-preview {
+  display: block;
+}
+
+.clip-item .hover-preview img {
+  display: block;
+  max-width: 200px;
+  max-height: 160px;
+  object-fit: contain;
+  border-radius: 4px;
 }
 
 /* === Settings Page === */
