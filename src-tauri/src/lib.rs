@@ -1,10 +1,12 @@
 mod clipboard;
 mod history;
 mod models;
+mod persistence;
 mod startup;
 
 use history::HistoryStore;
 use models::{AppConfig, Clip};
+use persistence::Persistence;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
@@ -13,6 +15,19 @@ struct AppState {
     config: Arc<Mutex<AppConfig>>,
     monitor_running: Arc<Mutex<bool>>,
     last_deleted: Arc<Mutex<Option<Clip>>>,
+    persistence: Arc<Mutex<Option<Persistence>>>,
+}
+
+/// Write-through to SQLite when persistence is enabled. Failures are
+/// logged (debug builds) but never block the in-memory operation.
+fn persist_with<F>(state: &AppState, f: F)
+where
+    F: FnOnce(&Persistence),
+{
+    let guard = state.persistence.lock().unwrap();
+    if let Some(p) = guard.as_ref() {
+        let _ = f(p);
+    }
 }
 
 #[tauri::command]
@@ -26,8 +41,12 @@ fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> 
     let mut history = state.history.lock().unwrap();
     let deleted = history.delete(&id);
     if let Some(clip) = deleted {
+        let clip_id = clip.id.clone();
         let mut last = state.last_deleted.lock().unwrap();
         *last = Some(clip);
+        persist_with(&state, |p| {
+            let _ = p.delete(&clip_id);
+        });
         Ok(())
     } else {
         Err("Clip not found".to_string())
@@ -38,9 +57,17 @@ fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> 
 fn undo_delete(state: tauri::State<AppState>) -> Result<Clip, String> {
     let mut last = state.last_deleted.lock().unwrap();
     if let Some(clip) = last.take() {
-        let mut history = state.history.lock().unwrap();
-        let config = state.config.lock().unwrap();
-        let restored = history.insert(clip, &config);
+        let (restored, evicted) = {
+            let mut history = state.history.lock().unwrap();
+            let config = state.config.lock().unwrap();
+            history.insert(clip, &config)
+        };
+        persist_with(&state, |p| {
+            let _ = p.upsert_capture(&restored);
+            for id in &evicted {
+                let _ = p.delete(id);
+            }
+        });
         Ok(restored)
     } else {
         Err("Nothing to undo".to_string())
@@ -49,8 +76,14 @@ fn undo_delete(state: tauri::State<AppState>) -> Result<Clip, String> {
 
 #[tauri::command]
 fn set_pinned(id: String, pinned: bool, state: tauri::State<AppState>) -> Result<(), String> {
-    let mut history = state.history.lock().unwrap();
-    history.set_pinned(&id, pinned)
+    {
+        let mut history = state.history.lock().unwrap();
+        history.set_pinned(&id, pinned)?;
+    }
+    persist_with(&state, |p| {
+        let _ = p.set_pinned(&id, pinned);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -68,14 +101,36 @@ fn rollback_hotkey_swap(app: &tauri::AppHandle, new_hotkey: &str, old_hotkey: &s
     let _ = register_panel_hotkey(app, old_hotkey);
 }
 
+/// Apply the persistence side of a config change. When enabling: open the
+/// database and dump the current in-memory History. When disabling: delete
+/// the database file, then drop the handle.
+fn apply_persist(state: &AppState, enabled: bool) -> Result<(), String> {
+    if enabled {
+        let p = Persistence::open()?;
+        let clips = state.history.lock().unwrap().get_all();
+        p.dump(&clips)?;
+        *state.persistence.lock().unwrap() = Some(p);
+    } else {
+        Persistence::delete_file()?;
+        *state.persistence.lock().unwrap() = None;
+    }
+    Ok(())
+}
+
+/// Undo a persistence toggle after a later step failed.
+fn rollback_persist(state: &AppState, failed_new_value: bool) {
+    let _ = apply_persist(state, !failed_new_value);
+}
+
 #[tauri::command]
 fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
-    let (old_hotkey, old_startup) = {
+    let (old_hotkey, old_startup, old_persist) = {
         let config = state.config.lock().unwrap();
-        (config.hotkey.clone(), config.startup)
+        (config.hotkey.clone(), config.startup, config.persist)
     };
     let mut swapped_hotkey = false;
     let mut swapped_startup = false;
+    let mut swapped_persist = false;
 
     // 1. Hotkey swap (validated + registered before anything is persisted).
     if new_config.hotkey != old_hotkey {
@@ -109,8 +164,25 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
         swapped_startup = true;
     }
 
-    // 3. Persist to disk; on failure roll back every side effect above.
+    // 3. History persistence toggle.
+    if new_config.persist != old_persist {
+        if let Err(e) = apply_persist(&state, new_config.persist) {
+            if swapped_startup {
+                let _ = startup::set_startup(old_startup);
+            }
+            if swapped_hotkey {
+                rollback_hotkey_swap(&app, &new_config.hotkey, &old_hotkey);
+            }
+            return Err(e);
+        }
+        swapped_persist = true;
+    }
+
+    // 4. Persist config to disk; on failure roll back every side effect above.
     if let Err(e) = new_config.save() {
+        if swapped_persist {
+            rollback_persist(&state, new_config.persist);
+        }
         if swapped_startup {
             let _ = startup::set_startup(old_startup);
         }
@@ -184,7 +256,7 @@ fn copy_only_image(image_data: Vec<u8>, _state: tauri::State<AppState>) -> Resul
     clipboard::write_image_to_clipboard(&image_data)
 }
 
-fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>) {
+fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>, persistence: Arc<Mutex<Option<Persistence>>>) {
     std::thread::spawn(move || {
         use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 
@@ -235,8 +307,19 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                     }
                     last_hash = Some((content_hash, now));
 
-                    let mut history = history.lock().unwrap();
-                    let clip = history.insert(clip, &config);
+                    let (clip, evicted) = {
+                        let mut history = history.lock().unwrap();
+                        history.insert(clip, &config)
+                    };
+                    {
+                        let guard = persistence.lock().unwrap();
+                        if let Some(p) = guard.as_ref() {
+                            let _ = p.upsert_capture(&clip);
+                            for id in &evicted {
+                                let _ = p.delete(id);
+                            }
+                        }
+                    }
                     let _ = app_handle.emit("clipboard-update", &clip);
                 }
                 Err(_) => {}
@@ -345,10 +428,36 @@ fn register_panel_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> Result<(),
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(_hidden: bool) {
     let config = AppConfig::load();
-    let history = Arc::new(Mutex::new(HistoryStore::new()));
+    let mut history_store = HistoryStore::new();
+
+    // Optional SQLite persistence: reload history left from previous runs.
+    let persistence = if config.persist {
+        match Persistence::open() {
+            Ok(p) => {
+                match p.load_all() {
+                    Ok(clips) => {
+                        for clip in clips {
+                            history_store.insert(clip, &config);
+                        }
+                    }
+                    Err(e) => log(&format!("[ClipFlow] failed to load persisted history: {}", e)),
+                }
+                Some(p)
+            }
+            Err(e) => {
+                log(&format!("[ClipFlow] failed to open persistence database: {}", e));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let history = Arc::new(Mutex::new(history_store));
     let config_store = Arc::new(Mutex::new(config.clone()));
     let monitor_running = Arc::new(Mutex::new(true));
     let last_deleted = Arc::new(Mutex::new(None));
+    let persistence = Arc::new(Mutex::new(persistence));
 
     log("[ClipFlow] run() called");
 
@@ -360,6 +469,7 @@ pub fn run(_hidden: bool) {
             config: config_store.clone(),
             monitor_running: monitor_running.clone(),
             last_deleted: last_deleted.clone(),
+            persistence: persistence.clone(),
         })
         .setup(move |app| {
             let resource_dir = app.path().resource_dir().unwrap_or_default();
@@ -392,7 +502,7 @@ pub fn run(_hidden: bool) {
 
             log("[ClipFlow] hotkey registered, starting tray setup");
             // Start clipboard monitor
-            start_monitor(handle.clone(), history.clone(), config_store.clone(), monitor_running.clone());
+            start_monitor(handle.clone(), history.clone(), config_store.clone(), monitor_running.clone(), persistence.clone());
 
             // Build tray (programmatic only — no trayIcon in config)
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
