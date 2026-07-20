@@ -1,7 +1,12 @@
 use crate::models::{AppConfig, Clip, ClipKind};
 use sha2::{Digest, Sha256};
+use windows::Win32::Foundation::{HANDLE, HWND};
+use windows::Win32::System::Memory::{GlobalSize, GlobalLock, GlobalUnlock, GlobalAlloc, GLOBAL_ALLOC_FLAGS};
+use windows::Win32::System::DataExchange::{
+    OpenClipboard, CloseClipboard, GetClipboardData, EmptyClipboard, SetClipboardData,
+    GetClipboardSequenceNumber,
+};
 
-// Clipboard format constants (raw values)
 const CF_TEXT: u32 = 1;
 const CF_BITMAP: u32 = 2;
 const CF_DIB: u32 = 8;
@@ -28,7 +33,6 @@ pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, String> {
         }
     }
 
-    // Priority: Image > Text > FilePaths
     if let Ok(clip) = try_capture_image(&source_exe, &source_title, now) {
         return Ok(clip);
     }
@@ -43,26 +47,22 @@ pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, String> {
 }
 
 fn try_capture_image(source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
-    use windows::Win32::System::DataExchange::{
-        OpenClipboard, CloseClipboard, GetClipboardData,
-    };
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Memory::{GlobalSize, GlobalLock, GlobalUnlock};
-
     unsafe {
-        if OpenClipboard(HWND(0)).is_err() {
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
             return Err("Cannot open clipboard".to_string());
         }
 
-        // Try DIB first, then BMP
         let handle = GetClipboardData(CF_DIB)
             .or_else(|_| GetClipboardData(CF_BITMAP))
             .map_err(|_| "No image format".to_string())?;
 
-        let mem_size = GlobalSize(handle);
-        let ptr = GlobalLock(handle);
+        // HGLOBAL -> HANDLE cast
+        let h: HANDLE = HANDLE(handle.0);
+
+        let mem_size = GlobalSize(h);
+        let ptr = GlobalLock(h);
         let dib_data = std::slice::from_raw_parts(ptr as *const u8, mem_size).to_vec();
-        let _ = GlobalUnlock(handle);
+        let _ = GlobalUnlock(h);
         let _ = CloseClipboard();
 
         let thumbnail_base64 = generate_thumbnail(&dib_data).unwrap_or_default();
@@ -88,18 +88,16 @@ fn try_capture_image(source_exe: &str, source_title: &str, now: u64) -> Result<C
 }
 
 fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
-    use windows::Win32::System::DataExchange::{OpenClipboard, CloseClipboard, GetClipboardData};
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
     use windows::Win32::UI::Shell::DROPFILES;
 
     unsafe {
-        if OpenClipboard(HWND(0)).is_err() {
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
             return Err("Cannot open clipboard".to_string());
         }
 
         let handle = GetClipboardData(CF_HDROP).map_err(|_| "No HDROP".to_string())?;
-        let ptr = GlobalLock(handle);
+        let h: HANDLE = HANDLE(handle.0);
+        let ptr = GlobalLock(h);
         let dropfiles = &*(ptr as *const DROPFILES);
         let file_offset = dropfiles.pFiles as usize;
         let base = ptr as usize + file_offset;
@@ -107,9 +105,8 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
         let mut files = Vec::new();
         let mut pos = base;
         loop {
-            let pstr = pos as *const u16;
             let mut chars = Vec::new();
-            let mut pp = pstr;
+            let mut pp = pos as *const u16;
             loop {
                 let c = *pp;
                 if c == 0 { break; }
@@ -121,7 +118,7 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
             pos += (chars.len() + 1) * 2;
         }
 
-        let _ = GlobalUnlock(handle);
+        let _ = GlobalUnlock(h);
         let _ = CloseClipboard();
 
         let file_list = files.join(";");
@@ -160,12 +157,8 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
 }
 
 fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
-    use windows::Win32::System::DataExchange::{OpenClipboard, CloseClipboard, GetClipboardData};
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-
     unsafe {
-        if OpenClipboard(HWND(0)).is_err() {
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
             return Err("Cannot open clipboard".to_string());
         }
 
@@ -173,7 +166,8 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
             .or_else(|_| GetClipboardData(CF_TEXT))
             .map_err(|_| "No text".to_string())?;
 
-        let ptr = GlobalLock(handle);
+        let h: HANDLE = HANDLE(handle.0);
+        let ptr = GlobalLock(h);
         let mut chars = Vec::new();
         let mut p = ptr as *const u16;
         loop {
@@ -183,7 +177,7 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
             p = p.add(1);
         }
 
-        let _ = GlobalUnlock(handle);
+        let _ = GlobalUnlock(h);
         let _ = CloseClipboard();
 
         let text = String::from_utf16_lossy(&chars);
@@ -258,48 +252,41 @@ fn generate_thumbnail(dib_data: &[u8]) -> Result<String, String> {
 }
 
 pub fn get_foreground_info() -> (String, String) {
-    unsafe {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-        };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    };
 
-        let hwnd = GetForegroundWindow();
-        if hwnd.0 == 0 {
-            return (String::from("Unknown"), String::new());
-        }
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0 == std::ptr::null_mut() {
+        return (String::from("Unknown"), String::new());
+    }
+    unsafe {
         let mut buf = [0u16; 256];
         let len = GetWindowTextW(hwnd, &mut buf);
         let title = String::from_utf16_lossy(&buf[..len as usize]);
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        let exe = get_process_name(pid).unwrap_or_else(|| "Unknown".to_string());
-        (exe, title)
+        // For now, use "Unknown" as exe name (process name lookup requires toolhelp which we skip for simplicity)
+        (String::from("Unknown"), title)
     }
 }
 
-fn get_process_name(_pid: u32) -> Option<String> {
-    None
-}
-
 pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
-    use windows::Win32::System::DataExchange::{OpenClipboard, CloseClipboard, EmptyClipboard, SetClipboardData};
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GLOBAL_ALLOC_FLAGS};
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
     unsafe {
         let wide: Vec<u16> = OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect();
         let bytes = wide.len() * 2;
-        let handle = GlobalAlloc(GLOBAL_ALLOC_FLAGS(0x0002), bytes)
+        let hglobal = GlobalAlloc(GLOBAL_ALLOC_FLAGS(0x0002), bytes)
             .map_err(|_| "Alloc failed".to_string())?;
-        let ptr = GlobalLock(handle);
+        let ptr = GlobalLock(HANDLE(hglobal.0));
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
-        let _ = GlobalUnlock(handle);
+        let _ = GlobalUnlock(HANDLE(hglobal.0));
 
-        if OpenClipboard(HWND(0)).is_err() { return Err("Cannot open".to_string()); }
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() { return Err("Cannot open".to_string()); }
         let _ = EmptyClipboard();
-        if SetClipboardData(CF_UNICODETEXT, handle).is_err() {
+        if SetClipboardData(CF_UNICODETEXT, HANDLE(hglobal.0)).is_err() {
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
@@ -309,20 +296,16 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
 }
 
 pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
-    use windows::Win32::System::DataExchange::{OpenClipboard, CloseClipboard, EmptyClipboard, SetClipboardData};
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GLOBAL_ALLOC_FLAGS};
-
     unsafe {
-        let handle = GlobalAlloc(GLOBAL_ALLOC_FLAGS(0x0002), data.len())
+        let hglobal = GlobalAlloc(GLOBAL_ALLOC_FLAGS(0x0002), data.len())
             .map_err(|_| "Alloc failed".to_string())?;
-        let ptr = GlobalLock(handle);
+        let ptr = GlobalLock(HANDLE(hglobal.0));
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
-        let _ = GlobalUnlock(handle);
+        let _ = GlobalUnlock(HANDLE(hglobal.0));
 
-        if OpenClipboard(HWND(0)).is_err() { return Err("Cannot open".to_string()); }
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() { return Err("Cannot open".to_string()); }
         let _ = EmptyClipboard();
-        if SetClipboardData(CF_DIB, handle).is_err() {
+        if SetClipboardData(CF_DIB, HANDLE(hglobal.0)).is_err() {
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
@@ -337,15 +320,14 @@ pub fn write_file_paths_to_clipboard(paths_str: &str) -> Result<(), String> {
 }
 
 pub fn simulate_ctrl_v() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        keybd_event, KEYBD_EVENT_FLAGS, VK_CONTROL,
+    };
+
     unsafe {
-        use windows::Win32::UI::Input::KeyboardAndMouse::keybd_event;
-        // Ctrl key down
-        keybd_event(17, 0, 0, 0);
-        // V key down
-        keybd_event(0x56, 0, 0, 0);
-        // V key up
-        keybd_event(0x56, 0, 2, 0);
-        // Ctrl key up
-        keybd_event(17, 0, 2, 0);
+        keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(0x56, 0, KEYBD_EVENT_FLAGS(0), 0);
+        keybd_event(0x56, 0, KEYBD_EVENT_FLAGS(2), 0);
+        keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(2), 0);
     }
 }
