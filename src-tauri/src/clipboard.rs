@@ -1,10 +1,8 @@
 use crate::models::{AppConfig, Clip, ClipKind};
 use sha2::{Digest, Sha256};
 use windows::Win32::Foundation::{HANDLE, HWND};
-use windows::Win32::System::Memory::{GlobalSize, GlobalLock, GlobalUnlock, GlobalAlloc, GLOBAL_ALLOC_FLAGS};
 use windows::Win32::System::DataExchange::{
     OpenClipboard, CloseClipboard, GetClipboardData, EmptyClipboard, SetClipboardData,
-    GetClipboardSequenceNumber,
 };
 
 const CF_TEXT: u32 = 1;
@@ -12,6 +10,20 @@ const CF_BITMAP: u32 = 2;
 const CF_DIB: u32 = 8;
 const CF_UNICODETEXT: u32 = 13;
 const CF_HDROP: u32 = 15;
+
+// Raw kernel32 memory functions — HANDLE.0 is isize
+extern "system" {
+    fn GlobalSize(hMem: isize) -> usize;
+    fn GlobalLock(hMem: isize) -> *mut std::ffi::c_void;
+    fn GlobalUnlock(hMem: isize) -> i32;
+    fn GlobalAlloc(uFlags: u32, dwBytes: usize) -> isize;
+}
+
+// Helper: GetClipboardData returns HANDLE, HANDLE.0 is *mut c_void
+unsafe fn global_size(h: HANDLE) -> usize { GlobalSize(h.0 as isize) }
+unsafe fn global_lock(h: HANDLE) -> *mut std::ffi::c_void { GlobalLock(h.0 as isize) }
+unsafe fn global_unlock(h: HANDLE) -> i32 { GlobalUnlock(h.0 as isize) }
+unsafe fn global_alloc(flags: u32, bytes: usize) -> isize { GlobalAlloc(flags, bytes) }
 
 pub fn hash_content(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -56,13 +68,10 @@ fn try_capture_image(source_exe: &str, source_title: &str, now: u64) -> Result<C
             .or_else(|_| GetClipboardData(CF_BITMAP))
             .map_err(|_| "No image format".to_string())?;
 
-        // HGLOBAL -> HANDLE cast
-        let h: HANDLE = HANDLE(handle.0);
-
-        let mem_size = GlobalSize(h);
-        let ptr = GlobalLock(h);
+        let mem_size = global_size(handle);
+        let ptr = global_lock(handle);
         let dib_data = std::slice::from_raw_parts(ptr as *const u8, mem_size).to_vec();
-        let _ = GlobalUnlock(h);
+        global_unlock(handle);
         let _ = CloseClipboard();
 
         let thumbnail_base64 = generate_thumbnail(&dib_data).unwrap_or_default();
@@ -96,8 +105,7 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
         }
 
         let handle = GetClipboardData(CF_HDROP).map_err(|_| "No HDROP".to_string())?;
-        let h: HANDLE = HANDLE(handle.0);
-        let ptr = GlobalLock(h);
+        let ptr = global_lock(handle);
         let dropfiles = &*(ptr as *const DROPFILES);
         let file_offset = dropfiles.pFiles as usize;
         let base = ptr as usize + file_offset;
@@ -118,7 +126,7 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
             pos += (chars.len() + 1) * 2;
         }
 
-        let _ = GlobalUnlock(h);
+        global_unlock(handle);
         let _ = CloseClipboard();
 
         let file_list = files.join(";");
@@ -130,6 +138,8 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
         let preview = if files.len() > 3 {
             format!("{}, +{} more", preview, files.len() - 3)
         } else { preview };
+
+        let file_list_len = file_list.len() as u64;
 
         let content_hash = {
             let mut hasher = Sha256::new();
@@ -151,7 +161,7 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
             source_icon: None,
             captured_at: now,
             pinned: false,
-            byte_size: file_list.len() as u64,
+            byte_size: file_list_len,
         })
     }
 }
@@ -166,8 +176,7 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
             .or_else(|_| GetClipboardData(CF_TEXT))
             .map_err(|_| "No text".to_string())?;
 
-        let h: HANDLE = HANDLE(handle.0);
-        let ptr = GlobalLock(h);
+        let ptr = global_lock(handle);
         let mut chars = Vec::new();
         let mut p = ptr as *const u16;
         loop {
@@ -177,7 +186,7 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
             p = p.add(1);
         }
 
-        let _ = GlobalUnlock(h);
+        global_unlock(handle);
         let _ = CloseClipboard();
 
         let text = String::from_utf16_lossy(&chars);
@@ -266,7 +275,6 @@ pub fn get_foreground_info() -> (String, String) {
         let title = String::from_utf16_lossy(&buf[..len as usize]);
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        // For now, use "Unknown" as exe name (process name lookup requires toolhelp which we skip for simplicity)
         (String::from("Unknown"), title)
     }
 }
@@ -278,15 +286,15 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
     unsafe {
         let wide: Vec<u16> = OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect();
         let bytes = wide.len() * 2;
-        let hglobal = GlobalAlloc(GLOBAL_ALLOC_FLAGS(0x0002), bytes)
-            .map_err(|_| "Alloc failed".to_string())?;
-        let ptr = GlobalLock(HANDLE(hglobal.0));
+        let hmem = global_alloc(0x0002, bytes);
+        if hmem == 0 { return Err("Alloc failed".to_string()); }
+        let ptr = GlobalLock(hmem);
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
-        let _ = GlobalUnlock(HANDLE(hglobal.0));
+        GlobalUnlock(hmem);
 
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() { return Err("Cannot open".to_string()); }
         let _ = EmptyClipboard();
-        if SetClipboardData(CF_UNICODETEXT, HANDLE(hglobal.0)).is_err() {
+        if SetClipboardData(CF_UNICODETEXT, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
@@ -297,15 +305,15 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
 
 pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
     unsafe {
-        let hglobal = GlobalAlloc(GLOBAL_ALLOC_FLAGS(0x0002), data.len())
-            .map_err(|_| "Alloc failed".to_string())?;
-        let ptr = GlobalLock(HANDLE(hglobal.0));
+        let hmem = GlobalAlloc(0x0002, data.len());
+        if hmem == 0 { return Err("Alloc failed".to_string()); }
+        let ptr = GlobalLock(hmem);
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
-        let _ = GlobalUnlock(HANDLE(hglobal.0));
+        GlobalUnlock(hmem);
 
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() { return Err("Cannot open".to_string()); }
         let _ = EmptyClipboard();
-        if SetClipboardData(CF_DIB, HANDLE(hglobal.0)).is_err() {
+        if SetClipboardData(CF_DIB, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }

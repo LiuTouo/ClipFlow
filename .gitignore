@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Rust build artifacts
+src-tauri/target/
+
+# Runtime data (generated per user)
+clipflow.config.json
+clipflow.db

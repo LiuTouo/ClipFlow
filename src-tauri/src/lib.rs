@@ -12,6 +12,7 @@ struct AppState {
     config: Arc<Mutex<AppConfig>>,
     monitor_running: Arc<Mutex<bool>>,
     last_deleted: Arc<Mutex<Option<Clip>>>,
+    panel_visible: Arc<Mutex<bool>>,
 }
 
 #[tauri::command]
@@ -60,9 +61,19 @@ fn get_config(state: tauri::State<AppState>) -> AppConfig {
 
 #[tauri::command]
 fn update_config(new_config: AppConfig, state: tauri::State<AppState>) -> Result<(), String> {
+    let old_hotkey = {
+        let config = state.config.lock().unwrap();
+        config.hotkey.clone()
+    };
     new_config.save()?;
+    let new_hotkey = new_config.hotkey.clone();
     let mut config = state.config.lock().unwrap();
     *config = new_config;
+    // If hotkey changed, re-register
+    if old_hotkey != new_hotkey {
+        // Unregister old, register new
+        // Handled by frontend calling back after settings save + re-invoking hotkey setup
+    }
     Ok(())
 }
 
@@ -87,34 +98,31 @@ fn is_monitoring(state: tauri::State<AppState>) -> bool {
 }
 
 #[tauri::command]
-fn paste_text(text: String, state: tauri::State<AppState>) -> Result<(), String> {
-    // Copy text to clipboard, then simulate Ctrl+V
+fn paste_text(text: String, _state: tauri::State<AppState>) -> Result<(), String> {
     clipboard::write_text_to_clipboard(&text)?;
-    // Simulate Ctrl+V
     clipboard::simulate_ctrl_v();
     Ok(())
 }
 
 #[tauri::command]
-fn paste_image(image_data: Vec<u8>, state: tauri::State<AppState>) -> Result<(), String> {
+fn paste_image(image_data: Vec<u8>, _state: tauri::State<AppState>) -> Result<(), String> {
     clipboard::write_image_to_clipboard(&image_data)?;
     clipboard::simulate_ctrl_v();
     Ok(())
 }
 
 #[tauri::command]
-fn paste_file_paths(paths: String, state: tauri::State<AppState>) -> Result<(), String> {
+fn paste_file_paths(paths: String, _state: tauri::State<AppState>) -> Result<(), String> {
     clipboard::write_file_paths_to_clipboard(&paths)?;
     clipboard::simulate_ctrl_v();
     Ok(())
 }
 
 #[tauri::command]
-fn copy_only_text(text: String, state: tauri::State<AppState>) -> Result<(), String> {
+fn copy_only_text(text: String, _state: tauri::State<AppState>) -> Result<(), String> {
     clipboard::write_text_to_clipboard(&text)
 }
 
-/// Start the clipboard monitoring background thread.
 fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>) {
     std::thread::spawn(move || {
         let mut last_seq: u32 = 0;
@@ -123,7 +131,6 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
         loop {
             std::thread::sleep(std::time::Duration::from_millis(200));
 
-            // Check if monitoring is paused
             {
                 let running = monitor_running.lock().unwrap();
                 if !*running {
@@ -131,10 +138,8 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                 }
             }
 
-            // Check clipboard sequence number
-            let current_seq = unsafe {
-                windows::Win32::System::DataExchange::GetClipboardSequenceNumber()
-            };
+            use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
+            let current_seq = unsafe { GetClipboardSequenceNumber() };
 
             if current_seq == last_seq {
                 continue;
@@ -143,24 +148,21 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
 
             let config = config.lock().unwrap().clone();
 
-            // Debounce check
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64;
 
-            if let Some((ref hash, ts)) = last_hash {
+            if let Some((ref _hash, ts)) = last_hash {
                 if now - ts < config.debounce_ms {
                     continue;
                 }
             }
 
-            // Capture clipboard
             match clipboard::capture_clipboard(&config) {
                 Ok(clip) => {
                     let content_hash = clip.content_hash.clone();
 
-                    // Debounce dedup
                     if let Some((ref hash, _)) = last_hash {
                         if *hash == content_hash {
                             continue;
@@ -168,28 +170,62 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                     }
                     last_hash = Some((content_hash, now));
 
-                    // Insert into history
                     let mut history = history.lock().unwrap();
                     let clip = history.insert(clip, &config);
-
-                    // Emit event to frontend
                     let _ = app_handle.emit("clipboard-update", &clip);
                 }
-                Err(_) => {
-                    // Unsupported format or excluded — silently skip
-                }
+                Err(_) => {}
             }
         }
     });
 }
 
+fn toggle_panel(
+    app: &tauri::AppHandle,
+    history: &Arc<Mutex<HistoryStore>>,
+    config: &Arc<Mutex<AppConfig>>,
+    monitor_running: &Arc<Mutex<bool>>,
+    panel_visible: &Arc<Mutex<bool>>,
+) {
+    let mut visible = panel_visible.lock().unwrap();
+
+    if *visible {
+        // Close panel
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+        *visible = false;
+    } else {
+        // Open panel
+        use tauri::WebviewUrl;
+        use tauri::WebviewWindowBuilder;
+
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+            *visible = true;
+        } else {
+            let _main_window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("ClipFlow")
+                .inner_size(420.0, 540.0)
+                .decorations(false)
+                .resizable(false)
+                .skip_taskbar(true)
+                .visible(true)
+                .build();
+            *visible = true;
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(_hidden: bool) {
+pub fn run(hidden: bool) {
     let config = AppConfig::load();
     let history = Arc::new(Mutex::new(HistoryStore::new()));
     let config_store = Arc::new(Mutex::new(config.clone()));
     let monitor_running = Arc::new(Mutex::new(true));
     let last_deleted = Arc::new(Mutex::new(None));
+    let panel_visible = Arc::new(Mutex::new(false));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -199,9 +235,43 @@ pub fn run(_hidden: bool) {
             config: config_store.clone(),
             monitor_running: monitor_running.clone(),
             last_deleted: last_deleted.clone(),
+            panel_visible: panel_visible.clone(),
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+
+            // Register global hotkey from config
+            use tauri_plugin_global_shortcut::GlobalShortcutExt;
+            let hotkey_str = {
+                let config = config_store.lock().unwrap();
+                config.hotkey.clone()
+            };
+
+            let handle_ref = handle.clone();
+            let history_ref = history.clone();
+            let config_ref = config_store.clone();
+            let monitor_ref = monitor_running.clone();
+            let panel_ref = panel_visible.clone();
+
+            if let Ok(shortcut) = hotkey_str.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                let result = app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        toggle_panel(
+                            &handle_ref,
+                            &history_ref,
+                            &config_ref,
+                            &monitor_ref,
+                            &panel_ref,
+                        );
+                    }
+                });
+                if let Err(e) = result {
+                    eprintln!("Failed to register hotkey '{}': {:?}", hotkey_str, e);
+                    // Hotkey conflict — could show settings window here
+                }
+            } else {
+                eprintln!("Invalid hotkey in config: {}", hotkey_str);
+            }
 
             // Start clipboard monitor
             start_monitor(handle.clone(), history.clone(), config_store.clone(), monitor_running.clone());
@@ -235,7 +305,6 @@ pub fn run(_hidden: bool) {
                             *running = !*running;
                         }
                         "settings" => {
-                            // Open settings window
                             let _ = open_settings_window(app);
                         }
                         "about" => {
@@ -254,7 +323,7 @@ pub fn run(_hidden: bool) {
                         ..
                     } = event
                     {
-                        // Left click opens the panel
+                        // Left click placeholder
                     }
                 })
                 .build(app)?;
@@ -284,7 +353,6 @@ fn open_settings_window(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
 
-    // Check if settings window already exists
     if let Some(window) = app.get_webview_window("settings") {
         window.set_focus()?;
         return Ok(());
