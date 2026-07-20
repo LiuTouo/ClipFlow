@@ -1,0 +1,36 @@
+[package]
+name = "clipflow"
+version = "0.1.0"
+description = "Modern lightweight clipboard history tool"
+authors = ["LiuT"]
+edition = "2021"
+
+[lib]
+name = "clipflow_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff", "webp"] }
+base64 = "0.22"
+tokio = { version = "1", features = ["sync", "macros", "rt"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_System_DataExchange",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_System_Memory",
+] }

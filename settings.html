@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClipFlow Settings</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="settings-body">
+    <div id="settings-panel">
+      <h1>Settings</h1>
+      <form id="settings-form">
+        <label>
+          Hotkey
+          <input type="text" id="setting-hotkey" value="Ctrl+Shift+V" readonly />
+          <span class="hint">Click to change, press Esc to cancel</span>
+        </label>
+        <hr />
+        <h2>Text History</h2>
+        <label>
+          Text size limit (KB)
+          <input type="number" id="setting-text-size-limit" min="10" max="10000" />
+        </label>
+        <label>
+          Max text entries
+          <input type="number" id="setting-text-count-limit" min="10" max="1000" />
+        </label>
+        <hr />
+        <h2>Image History</h2>
+        <label>
+          Max image entries
+          <input type="number" id="setting-image-count-limit" min="1" max="200" />
+        </label>
+        <label>
+          Image memory budget (MB)
+          <input type="number" id="setting-image-memory-budget" min="5" max="500" />
+        </label>
+        <label>
+          Single image size limit (MB)
+          <input type="number" id="setting-image-size-limit" min="1" max="100" />
+        </label>
+        <hr />
+        <h2>Behavior</h2>
+        <label class="checkbox-label">
+          <input type="checkbox" id="setting-startup" />
+          Start at login (portable shortcut)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="setting-persist" />
+          Persist history to disk (SQLite)
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="setting-vim-mode" />
+          Vim mode (j/k to navigate)
+        </label>
+        <label>
+          Debounce (ms)
+          <input type="number" id="setting-debounce" min="50" max="2000" step="50" />
+        </label>
+        <hr />
+        <h2>Appearance</h2>
+        <label>
+          Theme
+          <select id="setting-theme">
+            <option value="system">Follow system</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+        <hr />
+        <h2>Exclusion List</h2>
+        <p class="hint">Executable names (one per line). Clipboard content from these apps will not be recorded.</p>
+        <textarea id="setting-exclusions" rows="6" placeholder="1Password.exe&#10;Bitwarden.exe&#10;KeePass.exe"></textarea>
+        <hr />
+        <div class="settings-buttons">
+          <button type="submit" class="btn-primary">Save</button>
+          <button type="button" id="btn-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <script type="module" src="/src/settings.ts" defer></script>
+  </body>
+</html>
