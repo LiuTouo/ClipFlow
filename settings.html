@@ -3,79 +3,86 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ClipFlow Settings</title>
+    <title>ClipFlow 設定</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body class="settings-body">
     <div id="settings-panel">
-      <h1>Settings</h1>
+      <h1 data-i18n="settings">設定</h1>
       <form id="settings-form">
         <label>
-          Hotkey
+          <span data-i18n="hotkey">快捷鍵</span>
           <input type="text" id="setting-hotkey" value="Ctrl+Shift+V" readonly />
-          <span class="hint">Click to change, press Esc to cancel</span>
+          <span class="hint" data-i18n="hotkeyHint">點擊以變更，按 Esc 取消</span>
           <div id="hotkey-error" class="hotkey-error" role="alert"></div>
         </label>
         <hr />
-        <h2>Text History</h2>
+        <h2 data-i18n="textHistory">文字歷史</h2>
         <label>
-          Text size limit (KB)
+          <span data-i18n="textSizeLimit">單則文字大小上限 (KB)</span>
           <input type="number" id="setting-text-size-limit" min="10" max="10000" />
         </label>
         <label>
-          Max text entries
+          <span data-i18n="textCountLimit">文字歷史筆數上限</span>
           <input type="number" id="setting-text-count-limit" min="10" max="1000" />
         </label>
         <hr />
-        <h2>Image History</h2>
+        <h2 data-i18n="imageHistory">圖片歷史</h2>
         <label>
-          Max image entries
+          <span data-i18n="imageCountLimit">圖片歷史筆數上限</span>
           <input type="number" id="setting-image-count-limit" min="1" max="200" />
         </label>
         <label>
-          Image memory budget (MB)
+          <span data-i18n="imageMemoryBudget">圖片記憶體上限 (MB)</span>
           <input type="number" id="setting-image-memory-budget" min="5" max="500" />
         </label>
         <label>
-          Single image size limit (MB)
+          <span data-i18n="imageSizeLimit">單張圖片大小上限 (MB)</span>
           <input type="number" id="setting-image-size-limit" min="1" max="100" />
         </label>
         <hr />
-        <h2>Behavior</h2>
+        <h2 data-i18n="behavior">行為</h2>
         <label class="checkbox-label">
           <input type="checkbox" id="setting-startup" />
-          Start at login (portable shortcut)
+          <span data-i18n="startup">登入時自動啟動（免安裝捷徑）</span>
         </label>
         <label class="checkbox-label">
           <input type="checkbox" id="setting-persist" />
-          Persist history to disk (SQLite)
+          <span data-i18n="persist">將歷史紀錄保存到磁碟（SQLite）</span>
         </label>
         <label class="checkbox-label">
           <input type="checkbox" id="setting-vim-mode" />
-          Vim mode (j/k to navigate)
+          <span data-i18n="vimMode">Vim 模式（以 j/k 瀏覽）</span>
         </label>
         <label>
-          Debounce (ms)
+          <span data-i18n="debounce">防抖動 (ms)</span>
           <input type="number" id="setting-debounce" min="50" max="2000" step="50" />
         </label>
         <hr />
-        <h2>Appearance</h2>
+        <h2 data-i18n="appearance">外觀</h2>
         <label>
-          Theme
+          <span data-i18n="language">語言</span>
+          <select id="setting-language">
+            <option value="zh-TW">繁體中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <label>
+          <span data-i18n="theme">主題</span>
           <select id="setting-theme">
-            <option value="system">Follow system</option>
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
+            <option value="system" data-i18n="themeSystem">跟隨系統</option>
+            <option value="dark" data-i18n="themeDark">深色</option>
+            <option value="light" data-i18n="themeLight">淺色</option>
           </select>
         </label>
         <hr />
-        <h2>Exclusion List</h2>
-        <p class="hint">Executable names (one per line). Clipboard content from these apps will not be recorded.</p>
+        <h2 data-i18n="exclusionList">排除清單</h2>
+        <p class="hint" data-i18n="exclusionHint">執行檔名稱（每行一個）。來自這些應用程式的剪貼簿內容不會被記錄。</p>
         <textarea id="setting-exclusions" rows="6" placeholder="1Password.exe&#10;Bitwarden.exe&#10;KeePass.exe"></textarea>
         <hr />
         <div class="settings-buttons">
-          <button type="submit" class="btn-primary">Save</button>
-          <button type="button" id="btn-cancel">Cancel</button>
+          <button type="submit" class="btn-primary" data-i18n="save">儲存</button>
+          <button type="button" id="btn-cancel" data-i18n="cancel">取消</button>
         </div>
       </form>
     </div>

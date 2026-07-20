@@ -50,7 +50,9 @@ impl Clip {
 }
 
 /// User-configurable settings stored in clipflow.config.json
+/// Missing fields fall back to defaults so older config files keep working.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub text_size_limit_kb: u64,
     pub text_count_limit: usize,
@@ -64,6 +66,8 @@ pub struct AppConfig {
     pub vim_mode: bool,
     pub debounce_ms: u64,
     pub theme: String,
+    /// UI language: "zh-TW" (default) or "en"
+    pub language: String,
 }
 
 impl Default for AppConfig {
@@ -87,6 +91,7 @@ impl Default for AppConfig {
             vim_mode: false,
             debounce_ms: 200,
             theme: "system".to_string(),
+            language: "zh-TW".to_string(),
         }
     }
 }
