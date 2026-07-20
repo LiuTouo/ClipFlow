@@ -1,6 +1,7 @@
 mod clipboard;
 mod history;
 mod models;
+mod startup;
 
 use history::HistoryStore;
 use models::{AppConfig, Clip};
@@ -58,11 +59,25 @@ fn get_config(state: tauri::State<AppState>) -> AppConfig {
     config.clone()
 }
 
+/// Undo a hotkey swap so runtime state matches the on-disk config.
+fn rollback_hotkey_swap(app: &tauri::AppHandle, new_hotkey: &str, old_hotkey: &str) {
+    if let Ok(new_sc) = new_hotkey.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        let _ = app.global_shortcut().unregister(new_sc);
+    }
+    let _ = register_panel_hotkey(app, old_hotkey);
+}
+
 #[tauri::command]
 fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
-    let old_hotkey = state.config.lock().unwrap().hotkey.clone();
+    let (old_hotkey, old_startup) = {
+        let config = state.config.lock().unwrap();
+        (config.hotkey.clone(), config.startup)
+    };
     let mut swapped_hotkey = false;
+    let mut swapped_startup = false;
 
+    // 1. Hotkey swap (validated + registered before anything is persisted).
     if new_config.hotkey != old_hotkey {
         let new_shortcut = new_config
             .hotkey
@@ -83,14 +98,24 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
         }
     }
 
-    if let Err(e) = new_config.save() {
-        // Roll back the hotkey swap so runtime state matches the file on disk.
-        if swapped_hotkey {
-            if let Ok(new_sc) = new_config.hotkey.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-                use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let _ = app.global_shortcut().unregister(new_sc);
+    // 2. Autostart shortcut sync.
+    if new_config.startup != old_startup {
+        if let Err(e) = startup::set_startup(new_config.startup) {
+            if swapped_hotkey {
+                rollback_hotkey_swap(&app, &new_config.hotkey, &old_hotkey);
             }
-            let _ = register_panel_hotkey(&app, &old_hotkey);
+            return Err(e);
+        }
+        swapped_startup = true;
+    }
+
+    // 3. Persist to disk; on failure roll back every side effect above.
+    if let Err(e) = new_config.save() {
+        if swapped_startup {
+            let _ = startup::set_startup(old_startup);
+        }
+        if swapped_hotkey {
+            rollback_hotkey_swap(&app, &new_config.hotkey, &old_hotkey);
         }
         return Err(e);
     }
