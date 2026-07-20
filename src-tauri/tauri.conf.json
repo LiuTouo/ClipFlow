@@ -16,8 +16,8 @@
       "csp": null
     },
     "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
+      "iconPath": "icons/icon.ico",
+      "iconAsTemplate": false,
       "tooltip": "ClipFlow"
     }
   },
