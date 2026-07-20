@@ -44,6 +44,8 @@ async function init() {
     } else {
       clips.unshift(clip);
     }
+    // Match backend ordering: pinned first, then newest captured_at.
+    clips.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.captured_at - a.captured_at);
     render();
   });
 

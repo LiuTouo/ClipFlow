@@ -61,6 +61,7 @@ fn get_config(state: tauri::State<AppState>) -> AppConfig {
 #[tauri::command]
 fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
     let old_hotkey = state.config.lock().unwrap().hotkey.clone();
+    let mut swapped_hotkey = false;
 
     if new_config.hotkey != old_hotkey {
         let new_shortcut = new_config
@@ -71,17 +72,29 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
             .parse::<tauri_plugin_global_shortcut::Shortcut>()
             .ok();
 
-        if old_shortcut != Some(new_shortcut) {
+        if old_shortcut.as_ref() != Some(&new_shortcut) {
             // Register the new hotkey first; if it conflicts, the old one stays active.
             register_panel_hotkey(&app, &new_config.hotkey)?;
-            if let Some(old) = old_shortcut {
+            if let Some(old) = &old_shortcut {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let _ = app.global_shortcut().unregister(old);
+                let _ = app.global_shortcut().unregister(old.clone());
             }
+            swapped_hotkey = true;
         }
     }
 
-    new_config.save()?;
+    if let Err(e) = new_config.save() {
+        // Roll back the hotkey swap so runtime state matches the file on disk.
+        if swapped_hotkey {
+            if let Ok(new_sc) = new_config.hotkey.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let _ = app.global_shortcut().unregister(new_sc);
+            }
+            let _ = register_panel_hotkey(&app, &old_hotkey);
+        }
+        return Err(e);
+    }
+
     let mut config = state.config.lock().unwrap();
     *config = new_config;
     Ok(())
@@ -148,21 +161,25 @@ fn copy_only_image(image_data: Vec<u8>, _state: tauri::State<AppState>) -> Resul
 
 fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>) {
     std::thread::spawn(move || {
+        use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
+
         let mut last_seq: u32 = 0;
         let mut last_hash: Option<(String, u64)> = None;
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(200));
 
+            let current_seq = unsafe { GetClipboardSequenceNumber() };
+
             {
                 let running = monitor_running.lock().unwrap();
                 if !*running {
+                    // Keep last_seq in sync while paused: copies made during
+                    // the pause are permanently lost, not captured on resume.
+                    last_seq = current_seq;
                     continue;
                 }
             }
-
-            use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
-            let current_seq = unsafe { GetClipboardSequenceNumber() };
 
             if current_seq == last_seq {
                 continue;
@@ -230,12 +247,30 @@ fn show_panel(app: &tauri::AppHandle) {
         {
             Ok(w) => {
                 log(&format!("[ClipFlow] panel created: {:?}", w.label()));
-                // Click outside (focus loss) dismisses the Panel.
+                // Click outside (focus loss) dismisses the Panel. The handler
+                // is armed only after the window has gained focus once (with a
+                // grace-period backstop), so a transient focus bounce during
+                // creation doesn't immediately dismiss the Panel.
                 let app_handle = app.clone();
+                let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let armed_for_event = armed.clone();
                 w.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Focused(false) = event {
-                        hide_panel(&app_handle);
+                    match event {
+                        tauri::WindowEvent::Focused(true) => {
+                            armed_for_event.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        tauri::WindowEvent::Focused(false) => {
+                            if armed_for_event.load(std::sync::atomic::Ordering::Relaxed) {
+                                hide_panel(&app_handle);
+                            }
+                        }
+                        _ => {}
                     }
+                });
+                // Backstop: arm even if the initial focus event never arrives.
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    armed.store(true, std::sync::atomic::Ordering::Relaxed);
                 });
                 let _ = w.show();
                 let _ = w.set_focus();
@@ -352,6 +387,7 @@ pub fn run(_hidden: bool) {
                 .build()?;
 
             let icon = app.default_window_icon().cloned().unwrap();
+            let pause_item_handle = pause_item.clone();
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
@@ -364,6 +400,11 @@ pub fn run(_hidden: bool) {
                             let state = app.state::<AppState>();
                             let mut running = state.monitor_running.lock().unwrap();
                             *running = !*running;
+                            let _ = pause_item_handle.set_text(if *running {
+                                "Pause Monitoring"
+                            } else {
+                                "Resume Monitoring"
+                            });
                         }
                         "settings" => {
                             let _ = open_settings_window(app);

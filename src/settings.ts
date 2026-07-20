@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface AppConfig {
   text_size_limit_kb: number;
@@ -38,9 +39,22 @@ function populateForm() {
   (document.getElementById("setting-exclusions") as HTMLTextAreaElement).value = config.exclusion_list.join("\n");
 }
 
+function showError(message: string) {
+  const el = document.getElementById("hotkey-error")!;
+  el.textContent = message;
+  el.classList.add("visible");
+}
+
+function clearError() {
+  const el = document.getElementById("hotkey-error")!;
+  el.textContent = "";
+  el.classList.remove("visible");
+}
+
 function bindEvents() {
   document.getElementById("settings-form")!.addEventListener("submit", async (e) => {
     e.preventDefault();
+    clearError();
 
     config.text_size_limit_kb = Number((document.getElementById("setting-text-size-limit") as HTMLInputElement).value);
     config.text_count_limit = Number((document.getElementById("setting-text-count-limit") as HTMLInputElement).value);
@@ -61,20 +75,21 @@ function bindEvents() {
     try {
       await invoke("update_config", { newConfig: config });
       // Close settings window
-      window.close();
+      await getCurrentWindow().close();
     } catch (err) {
       console.error("Save failed:", err);
-      alert("Failed to save settings: " + err);
+      showError(String(err));
     }
   });
 
   document.getElementById("btn-cancel")!.addEventListener("click", () => {
-    window.close();
+    getCurrentWindow().close();
   });
 
   // Hotkey recording
   const hotkeyInput = document.getElementById("setting-hotkey") as HTMLInputElement;
   hotkeyInput.addEventListener("click", () => {
+    clearError();
     hotkeyInput.classList.add("recording");
     hotkeyInput.value = "Press keys...";
     hotkeyInput.readOnly = true;
