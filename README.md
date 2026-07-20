@@ -1,31 +1,67 @@
 # ClipFlow
 
-Modern lightweight Windows clipboard history tool. Tauri v2 + Vanilla TS/CSS, Raycast-style floating panel.
+**[English](README.md) | [繁體中文](README.zh-TW.md)**
+
+Modern lightweight Windows clipboard history tool. Tauri v2 + Vanilla TS/CSS, Raycast-style floating panel. Fully portable — no installation, no registry writes.
 
 See `CONTEXT.md` for the domain glossary and behavior spec.
 
-## Build
+## Features
 
-Frontend assets are **embedded into the exe at compile time** from `dist/` (Tauri `frontendDist`). `dist/` must be built **before** compiling Rust, otherwise the exe embeds stale assets. Use the single command:
+- **Clipboard monitoring** — Text, Image, and File Paths clips with SHA-256 deduplication
+- **Floating panel** — `Ctrl+Shift+V` toggles a transparent, rounded Raycast-style panel; real-time updates
+- **Search** — instant case-insensitive substring filtering
+- **Keyboard first** — arrows / `Enter` / `Esc`, optional Vim mode (`j`/`k`)
+- **Pin** — up to 10 clips pinned above a divider, never evicted
+- **Paste** — writes to the clipboard, returns focus to the previous app, simulates `Ctrl+V`; copy-only button per clip
+- **Delete with undo** — 3-second toast
+- **Exclusion list** — clipboard content from password managers (1Password, Bitwarden, KeePass) is never recorded
+- **Pause monitoring** — from the tray menu; paused copies are permanently discarded
+- **Capacity limits** — configurable text count/size, image count/memory budget; oldest unpinned evicted first
+- **Optional SQLite persistence** — write-through to `clipflow.db` next to the exe
+- **Autostart** — optional `shell:startup` shortcut, no registry Run key
+- **Themes & languages** — dark/light follows system; settings UI in 繁體中文 (default) or English
+
+## Requirements
+
+- Windows 10 / 11 (64-bit)
+- [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) — preinstalled on Windows 11 and on most up-to-date Windows 10 machines. Only rare stripped/LTSC systems need the small evergreen installer.
+
+## Quick start (portable)
+
+1. Copy `clipflow.exe` into its own folder (config and data live next to the exe).
+2. Run it — no window appears; ClipFlow lives in the system tray.
+3. Press `Ctrl+Shift+V` to open the history panel.
+
+```
+ClipFlow\
+├── clipflow.exe
+├── clipflow.config.json   (auto-generated)
+└── clipflow.db            (only when persistence is enabled)
+```
+
+## Usage
+
+- `Ctrl+Shift+V` — toggle the history panel (configurable)
+- `Esc` / click outside / pick a clip — dismiss the panel
+- Click a clip — paste it into the previously focused app
+- 📌 pin · 📋 copy-only · 🗑 delete — per-clip side actions (panel stays open)
+- Tray icon (right-click) — Pause Monitoring, Settings, About, Quit
+
+## Build from source
+
+Prerequisites: [Node.js](https://nodejs.org/) and [Rust](https://rustup.rs/).
 
 ```bash
+git clone https://github.com/LiuTouo/ClipFlow
+cd ClipFlow
 npm install
-npm run build:app        # = npm run build (tsc + vite → dist/) + cargo build --release
+npm run build:app
 ```
 
-Output: `src-tauri/target/release/clipflow.exe`
+Output: `src-tauri/target/release/clipflow.exe` (~15 MB, frontend assets embedded).
 
-## Portable deployment
-
-Copy only `clipflow.exe` to the target folder. No external `dist/` needed — assets are embedded. `clipflow.config.json` is auto-created next to the exe on first run.
-
-```
-D:\Tools\ClipFlow\
-├── clipflow.exe
-└── clipflow.config.json   (auto-generated)
-```
-
-Run hidden (tray only): `clipflow.exe --hidden`
+`npm run build:app` runs `npm run build` (tsc + vite → `dist/`) then `cargo build --release --features custom-protocol`. The `custom-protocol` feature is **required for production**: without it Tauri compiles in dev mode and every window tries to load `http://localhost:1420` instead of the embedded assets. Keep it off for `npm run tauri dev` (hot-reload via the vite dev server).
 
 ## Dev
 
@@ -33,8 +69,22 @@ Run hidden (tray only): `clipflow.exe --hidden`
 npm run tauri dev
 ```
 
-## Usage
+## Project structure
 
-- `Ctrl+Shift+V` — toggle the history panel (configurable in Settings)
-- `Esc` / click outside / pick a clip — dismiss the panel
-- Tray icon (right-click): Pause Monitoring, Settings, About, Quit
+```
+index.html / settings.html / about.html   # pages (vite multi-page)
+src/                                      # frontend TS + styles
+src-tauri/
+  src/
+    main.rs          # entry: --hidden flag
+    lib.rs           # Tauri core: tray, hotkey, commands, panel lifecycle
+    clipboard.rs     # Win32 clipboard capture/write, DIB decode, Ctrl+V
+    history.rs       # in-memory history: dedup, limits, eviction, pinning
+    models.rs        # Clip + AppConfig (portable JSON config)
+    persistence.rs   # optional SQLite write-through store
+    startup.rs       # shell:startup .lnk via COM IShellLinkW
+```
+
+## Tech stack
+
+Tauri v2 (Rust, `windows` crate for Win32) · Vanilla TypeScript/CSS · vite · rusqlite (bundled SQLite) · image/sha2/base64
