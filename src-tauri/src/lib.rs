@@ -574,8 +574,18 @@ pub fn run(_hidden: bool) {
             copy_only_text,
             copy_only_image,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // Tray app: closing the last window only returns to the
+            // background — never exits. Quit is explicit via the tray menu
+            // (app.exit bypasses this handler).
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 fn open_settings_window(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
