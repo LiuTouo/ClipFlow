@@ -59,7 +59,28 @@ fn get_config(state: tauri::State<AppState>) -> AppConfig {
 }
 
 #[tauri::command]
-fn update_config(new_config: AppConfig, state: tauri::State<AppState>) -> Result<(), String> {
+fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
+    let old_hotkey = state.config.lock().unwrap().hotkey.clone();
+
+    if new_config.hotkey != old_hotkey {
+        let new_shortcut = new_config
+            .hotkey
+            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            .map_err(|e| format!("Invalid hotkey '{}': {}", new_config.hotkey, e))?;
+        let old_shortcut = old_hotkey
+            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            .ok();
+
+        if old_shortcut != Some(new_shortcut) {
+            // Register the new hotkey first; if it conflicts, the old one stays active.
+            register_panel_hotkey(&app, &new_config.hotkey)?;
+            if let Some(old) = old_shortcut {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let _ = app.global_shortcut().unregister(old);
+            }
+        }
+    }
+
     new_config.save()?;
     let mut config = state.config.lock().unwrap();
     *config = new_config;
@@ -86,30 +107,43 @@ fn is_monitoring(state: tauri::State<AppState>) -> bool {
     *running
 }
 
+/// Write content to the clipboard, hide the Panel so focus returns to the
+/// previous window, wait for focus to settle, then simulate Ctrl+V.
+async fn hide_and_paste(app: &tauri::AppHandle) {
+    hide_panel(app);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    clipboard::simulate_ctrl_v();
+}
+
 #[tauri::command]
-fn paste_text(text: String, _state: tauri::State<AppState>) -> Result<(), String> {
+async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
     clipboard::write_text_to_clipboard(&text)?;
-    clipboard::simulate_ctrl_v();
+    hide_and_paste(&app).await;
     Ok(())
 }
 
 #[tauri::command]
-fn paste_image(image_data: Vec<u8>, _state: tauri::State<AppState>) -> Result<(), String> {
+async fn paste_image(app: tauri::AppHandle, image_data: Vec<u8>) -> Result<(), String> {
     clipboard::write_image_to_clipboard(&image_data)?;
-    clipboard::simulate_ctrl_v();
+    hide_and_paste(&app).await;
     Ok(())
 }
 
 #[tauri::command]
-fn paste_file_paths(paths: String, _state: tauri::State<AppState>) -> Result<(), String> {
+async fn paste_file_paths(app: tauri::AppHandle, paths: String) -> Result<(), String> {
     clipboard::write_file_paths_to_clipboard(&paths)?;
-    clipboard::simulate_ctrl_v();
+    hide_and_paste(&app).await;
     Ok(())
 }
 
 #[tauri::command]
 fn copy_only_text(text: String, _state: tauri::State<AppState>) -> Result<(), String> {
     clipboard::write_text_to_clipboard(&text)
+}
+
+#[tauri::command]
+fn copy_only_image(image_data: Vec<u8>, _state: tauri::State<AppState>) -> Result<(), String> {
+    clipboard::write_image_to_clipboard(&image_data)
 }
 
 fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>) {
@@ -196,6 +230,13 @@ fn show_panel(app: &tauri::AppHandle) {
         {
             Ok(w) => {
                 log(&format!("[ClipFlow] panel created: {:?}", w.label()));
+                // Click outside (focus loss) dismisses the Panel.
+                let app_handle = app.clone();
+                w.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event {
+                        hide_panel(&app_handle);
+                    }
+                });
                 let _ = w.show();
                 let _ = w.set_focus();
             }
@@ -212,6 +253,35 @@ fn hide_panel(app: &tauri::AppHandle) {
     }
 }
 
+fn toggle_panel(app: &tauri::AppHandle) {
+    let visible = app
+        .get_webview_window("main")
+        .map(|w| w.is_visible().unwrap_or(false))
+        .unwrap_or(false);
+    if visible {
+        hide_panel(app);
+    } else {
+        show_panel(app);
+    }
+}
+
+/// Register the global hotkey that toggles the Panel.
+/// Returns Err if the combination is invalid or already owned by another app.
+fn register_panel_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let shortcut = hotkey_str
+        .parse::<tauri_plugin_global_shortcut::Shortcut>()
+        .map_err(|e| format!("Invalid hotkey '{}': {}", hotkey_str, e))?;
+    let handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _sc, event| {
+            if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                toggle_panel(&handle);
+            }
+        })
+        .map_err(|e| format!("Hotkey '{}' is already in use: {}", hotkey_str, e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(_hidden: bool) {
     let config = AppConfig::load();
@@ -221,40 +291,6 @@ pub fn run(_hidden: bool) {
     let last_deleted = Arc::new(Mutex::new(None));
 
     log("[ClipFlow] run() called");
-
-    // Override resource_dir to look in exe directory for portable mode
-    let exe_dir = std::env::current_exe()
-        .unwrap_or_default()
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let frontend_dist = exe_dir.join("dist");
-    std::env::set_var("TAURI_FRONTEND_DIST", &frontend_dist);
-    log(&format!("[ClipFlow] frontend dist: {:?}", frontend_dist));
-
-    // Copy dist files from project dir to exe dir if needed
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let project_dist = cwd.join("dist");
-    if !frontend_dist.join("index.html").exists() && project_dist.join("index.html").exists() {
-        log("[ClipFlow] copying dist from project dir");
-        let _ = std::fs::create_dir_all(&frontend_dist);
-        if let Ok(entries) = std::fs::read_dir(&project_dist) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    let src = entry.path();
-                    let dst = frontend_dist.join(entry.file_name());
-                    let _ = std::fs::create_dir_all(&dst);
-                    if let Ok(sub_entries) = std::fs::read_dir(&src) {
-                        for se in sub_entries.flatten() {
-                            let _ = std::fs::copy(se.path(), dst.join(se.file_name()));
-                        }
-                    }
-                } else {
-                    let _ = std::fs::copy(entry.path(), frontend_dist.join(entry.file_name()));
-                }
-            }
-        }
-    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -273,32 +309,20 @@ pub fn run(_hidden: bool) {
 
             log("[ClipFlow] registering hotkey");
             // Register global hotkey
-            use tauri_plugin_global_shortcut::GlobalShortcutExt;
             let hotkey_str = {
                 let config = config_store.lock().unwrap();
                 config.hotkey.clone()
             };
 
-            let handle_clone = handle.clone();
-            let handle_toggle = handle.clone();
-
-            if let Ok(shortcut) = hotkey_str.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-                let _ = app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        if handle_toggle.get_webview_window("main")
-                            .map(|w| w.is_visible().unwrap_or(false))
-                            .unwrap_or(false)
-                        {
-                            hide_panel(&handle_toggle);
-                        } else {
-                            show_panel(&handle_toggle);
-                        }
-                    }
-                });
+            if let Err(e) = register_panel_hotkey(&handle, &hotkey_str) {
+                log(&format!("[ClipFlow] hotkey registration failed: {}", e));
+                // Per spec: on conflict, open Settings so the user picks another combination.
+                let _ = open_settings_window(&handle);
             }
 
             let handle_debug = handle.clone();
             if let Ok(debug_sc) = "Ctrl+Shift+I".parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 let _ = app.global_shortcut().on_shortcut(debug_sc, move |_app, _sc, event| {
                     if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                         show_panel(&handle_debug);
@@ -312,7 +336,7 @@ pub fn run(_hidden: bool) {
 
             // Build tray (programmatic only — no trayIcon in config)
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
-            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri::tray::TrayIconBuilder;
 
             let pause_item = MenuItemBuilder::with_id("pause", "Pause Monitoring").build(app)?;
             let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
@@ -372,6 +396,7 @@ pub fn run(_hidden: bool) {
             paste_image,
             paste_file_paths,
             copy_only_text,
+            copy_only_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

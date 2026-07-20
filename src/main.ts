@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface Clip {
   id: string;
@@ -193,6 +194,8 @@ function render() {
 
 // === Actions ===
 async function pasteClip(clip: Clip) {
+  // The backend writes to the clipboard, hides the Panel (returning focus to
+  // the previous app), then simulates Ctrl+V.
   try {
     switch (clip.kind) {
       case "Text":
@@ -208,8 +211,6 @@ async function pasteClip(clip: Clip) {
   } catch (err) {
     console.error("Paste failed:", err);
   }
-  // Close panel (Tauri will handle via window blur)
-  closePanel();
 }
 
 async function copyOnly(clip: Clip) {
@@ -262,9 +263,7 @@ async function togglePin(clip: Clip) {
 }
 
 async function closePanel() {
-  // Simulate Esc to trigger Tauri focus loss → close
-  // The panel closes on blur
-  window.blur();
+  await getCurrentWindow().hide();
 }
 
 // === Toast ===
@@ -360,15 +359,7 @@ searchInput.addEventListener("input", () => {
   render();
 });
 
-// Focus/blur to close panel
-window.addEventListener("blur", () => {
-  // Small delay to allow click events to fire
-  setTimeout(() => {
-    if (!document.hasFocus()) {
-      // Tauri will destroy the window on blur
-    }
-  }, 150);
-});
+// Focus-loss dismissal is handled on the Rust side (WindowEvent::Focused).
 
 // === Initialize ===
 window.addEventListener("DOMContentLoaded", init);
