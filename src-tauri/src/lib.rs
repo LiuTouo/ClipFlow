@@ -243,10 +243,28 @@ pub fn run(_hidden: bool) {
     std::env::set_var("TAURI_FRONTEND_DIST", &frontend_dist);
     log(&format!("[ClipFlow] frontend dist: {:?}", frontend_dist));
 
-    // Auto-create assets dir if missing
-    let dst_assets = frontend_dist.join("assets");
-    if !dst_assets.exists() {
-        std::fs::create_dir_all(&dst_assets).ok();
+    // Copy dist files from project dir to exe dir if needed
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let project_dist = cwd.join("dist");
+    if !frontend_dist.join("index.html").exists() && project_dist.join("index.html").exists() {
+        log("[ClipFlow] copying dist from project dir");
+        let _ = std::fs::create_dir_all(&frontend_dist);
+        if let Ok(entries) = std::fs::read_dir(&project_dist) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    let src = entry.path();
+                    let dst = frontend_dist.join(entry.file_name());
+                    let _ = std::fs::create_dir_all(&dst);
+                    if let Ok(sub_entries) = std::fs::read_dir(&src) {
+                        for se in sub_entries.flatten() {
+                            let _ = std::fs::copy(se.path(), dst.join(se.file_name()));
+                        }
+                    }
+                } else {
+                    let _ = std::fs::copy(entry.path(), frontend_dist.join(entry.file_name()));
+                }
+            }
+        }
     }
 
     tauri::Builder::default()
@@ -290,15 +308,13 @@ pub fn run(_hidden: bool) {
                 });
             }
 
-            // Also register Ctrl+Shift+I as fallback debug shortcut
+            let handle_debug = handle.clone();
             if let Ok(debug_sc) = "Ctrl+Shift+I".parse::<tauri_plugin_global_shortcut::Shortcut>() {
-                let handle_debug = handle.clone();
                 let _ = app.global_shortcut().on_shortcut(debug_sc, move |_app, _sc, event| {
                     if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                         show_panel(&handle_debug);
                     }
                 });
-                log("[ClipFlow] debug shortcut Ctrl+Shift+I registered");
             }
 
             log("[ClipFlow] hotkey registered, starting tray setup");

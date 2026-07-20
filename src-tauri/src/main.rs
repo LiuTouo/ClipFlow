@@ -5,6 +5,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 
 fn log(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
     let log_path = std::env::current_exe()
         .unwrap_or_default()
         .parent()
