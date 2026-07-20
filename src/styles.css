@@ -1,5 +1,6 @@
 /* === Raycast-inspired theme variables === */
 :root {
+  color-scheme: light;
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-size: 13px;
   --font-size-small: 11px;
@@ -30,6 +31,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
     --bg-primary: #1c1c1e;
     --bg-secondary: #2c2c2e;
     --bg-hover: #3a3a3c;
@@ -73,11 +75,13 @@ html, body {
   user-select: none;
 }
 
-/* === Panel === */
+/* === Panel ===
+   The window itself is transparent and larger than the panel; the margin
+   leaves room for the rounded corners and the CSS drop shadow. */
 #panel {
   width: 420px;
   max-height: 540px;
-  margin: 0 auto;
+  margin: 30px auto 0;
   background: var(--glass-bg);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
@@ -125,16 +129,30 @@ html, body {
   padding: 6px;
 }
 
-#clip-list::-webkit-scrollbar {
-  width: 6px;
+/* === Scrollbars — thin, quiet, theme-aware everywhere === */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
-#clip-list::-webkit-scrollbar-thumb {
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
   background: var(--border-color);
-  border-radius: 3px;
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
-#clip-list::-webkit-scrollbar-track {
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
   background: transparent;
 }
 
@@ -428,6 +446,59 @@ html, body {
   border-color: var(--accent);
 }
 
+/* De-nativize form controls so nothing looks like a default webpage element */
+#settings-panel select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3e%3cpath d='M1 1l4 4 4-4' stroke='%23999' stroke-width='1.5' fill='none' stroke-linecap='round'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+  cursor: pointer;
+}
+
+#settings-panel input[type="number"]::-webkit-outer-spin-button,
+#settings-panel input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+#settings-panel input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+#settings-panel input[type="checkbox"]:hover {
+  border-color: var(--accent);
+}
+
+#settings-panel input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+#settings-panel input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 4.5px;
+  top: 1.5px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
 #settings-panel textarea {
   width: 100%;
   padding: 8px 10px;
@@ -438,7 +509,7 @@ html, body {
   font-family: "Consolas", "Fira Code", monospace;
   font-size: var(--font-size-small);
   outline: none;
-  resize: vertical;
+  resize: none;
 }
 
 #settings-panel textarea:focus {

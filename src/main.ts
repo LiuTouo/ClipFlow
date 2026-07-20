@@ -361,6 +361,13 @@ searchInput.addEventListener("input", () => {
   render();
 });
 
+// Clicks on the transparent margin around the panel dismiss it.
+document.body.addEventListener("click", (e) => {
+  if (e.target === document.body || e.target === document.documentElement) {
+    closePanel();
+  }
+});
+
 // Focus-loss dismissal is handled on the Rust side (WindowEvent::Focused).
 
 // === Initialize ===

@@ -343,8 +343,11 @@ fn show_panel(app: &tauri::AppHandle) {
         log("[ClipFlow] creating new panel window");
         match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("ClipFlow")
-            .inner_size(420.0, 540.0)
+            // Window is larger than the panel (420x540) so the rounded
+            // corners and CSS drop shadow have room inside a transparent frame.
+            .inner_size(480.0, 620.0)
             .decorations(false)
+            .transparent(true)
             .resizable(false)
             .skip_taskbar(true)
             .always_on_top(true)
