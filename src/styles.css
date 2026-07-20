@@ -383,35 +383,6 @@ html, body {
   object-fit: cover;
 }
 
-/* === Image Hover Preview ===
-   Floating larger preview shown while hovering an image Clip row. */
-.clip-item .hover-preview {
-  display: none;
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 20;
-  padding: 6px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  box-shadow: var(--shadow);
-  pointer-events: none;
-}
-
-.clip-item:hover .hover-preview {
-  display: block;
-}
-
-.clip-item .hover-preview img {
-  display: block;
-  max-width: 200px;
-  max-height: 160px;
-  object-fit: contain;
-  border-radius: 4px;
-}
-
 /* === Settings Page === */
 .settings-body {
   background: var(--bg-primary) !important;
