@@ -9,6 +9,13 @@ edition = "2021"
 name = "clipflow_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Enabled for production builds (`cargo build --release --features custom-protocol`,
+# or `tauri build` which passes it automatically). Without it, Tauri compiles in
+# `dev` mode and every window loads `devUrl` (http://localhost:1420) instead of
+# the embedded frontend assets. Keep it OFF for `npm run tauri dev`.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
