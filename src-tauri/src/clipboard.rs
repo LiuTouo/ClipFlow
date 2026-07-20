@@ -6,7 +6,6 @@ use windows::Win32::System::DataExchange::{
 };
 
 const CF_TEXT: u32 = 1;
-const CF_BITMAP: u32 = 2;
 const CF_DIB: u32 = 8;
 const CF_UNICODETEXT: u32 = 13;
 const CF_HDROP: u32 = 15;
@@ -64,12 +63,22 @@ fn try_capture_image(source_exe: &str, source_title: &str, now: u64) -> Result<C
             return Err("Cannot open clipboard".to_string());
         }
 
+        // NOTE: CF_BITMAP is intentionally not used — it returns an HBITMAP
+        // (a GDI object handle), not an HGLOBAL memory block, so it cannot be
+        // read through GlobalSize/GlobalLock.
         let handle = GetClipboardData(CF_DIB)
-            .or_else(|_| GetClipboardData(CF_BITMAP))
-            .map_err(|_| "No image format".to_string())?;
+            .map_err(|_| "No DIB image on clipboard".to_string())?;
 
         let mem_size = global_size(handle);
+        if mem_size == 0 {
+            let _ = CloseClipboard();
+            return Err("Empty image data".to_string());
+        }
         let ptr = global_lock(handle);
+        if ptr.is_null() {
+            let _ = CloseClipboard();
+            return Err("Cannot lock image data".to_string());
+        }
         let dib_data = std::slice::from_raw_parts(ptr as *const u8, mem_size).to_vec();
         global_unlock(handle);
         let _ = CloseClipboard();
@@ -232,50 +241,236 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
 }
 
 fn generate_thumbnail(dib_data: &[u8]) -> Result<String, String> {
-    use image::GenericImageView;
     use base64::Engine;
+    use image::GenericImageView;
+    use image::ImageEncoder;
 
-    let img = image::load_from_memory(dib_data)
+    let dyn_img = decode_dib(dib_data)
+        .map(image::DynamicImage::ImageRgba8)
         .or_else(|_| {
-            let mut bmp = Vec::with_capacity(14 + dib_data.len());
-            bmp.extend_from_slice(b"BM");
-            bmp.extend_from_slice(&(dib_data.len() as u32 + 14).to_le_bytes());
-            bmp.extend_from_slice(&[0u8; 4]);
-            bmp.extend_from_slice(dib_data);
-            image::load_from_memory(&bmp)
-        })
-        .map_err(|e| format!("Image load: {}", e))?;
+            // Fallback for palette-based or unusually-headed DIBs: wrap with a
+            // correct BMP file header and let the image crate decode it.
+            let bmp = wrap_dib_as_bmp(dib_data)
+                .ok_or_else(|| "unsupported DIB layout".to_string())?;
+            image::load_from_memory(&bmp).map_err(|e| format!("BMP decode: {}", e))
+        })?;
 
-    let (w, h) = img.dimensions();
+    let (w, h) = dyn_img.dimensions();
+    if w == 0 || h == 0 {
+        return Err("empty image".to_string());
+    }
     let thumb_w = 200u32;
-    let thumb_h = ((h as f64) * (thumb_w as f64 / w as f64)) as u32;
-    let thumb_h = thumb_h.max(1);
-    let thumb = img.thumbnail(thumb_w, thumb_h);
+    let thumb_h = (((h as f64) * (thumb_w as f64 / w as f64)) as u32).max(1);
+    let thumb = dyn_img.thumbnail(thumb_w, thumb_h).to_rgb8();
 
-    let mut buf = std::io::Cursor::new(Vec::new());
-    thumb.write_to(&mut buf, image::ImageFormat::Jpeg)
+    let mut buf = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85)
+        .write_image(
+            thumb.as_raw(),
+            thumb.width(),
+            thumb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
         .map_err(|e| format!("JPEG encode: {}", e))?;
 
-    Ok(format!("data:image/jpeg;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(buf.into_inner())))
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(buf)
+    ))
+}
+
+/// Decode a raw DIB (as stored on the clipboard for CF_DIB) into RGBA pixels.
+/// Handles the common cases: BITMAPINFOHEADER-or-later, 24/32 bpp, BI_RGB or
+/// BI_BITFIELDS. Alpha is honored only when a mask explicitly defines it —
+/// 32-bit BI_RGB sources often leave the alpha byte zeroed.
+fn decode_dib(dib: &[u8]) -> Result<image::RgbaImage, String> {
+    if dib.len() < 40 {
+        return Err("DIB too small".to_string());
+    }
+    let header_size = u32::from_le_bytes(dib[0..4].try_into().unwrap()) as usize;
+    if header_size < 40 || dib.len() < header_size {
+        return Err("unsupported DIB header".to_string());
+    }
+    let width = i32::from_le_bytes(dib[4..8].try_into().unwrap());
+    let height_raw = i32::from_le_bytes(dib[8..12].try_into().unwrap());
+    let bpp = u16::from_le_bytes(dib[14..16].try_into().unwrap()) as usize;
+    let compression = u32::from_le_bytes(dib[16..20].try_into().unwrap());
+
+    if width <= 0 || height_raw == 0 {
+        return Err("bad dimensions".to_string());
+    }
+    let width = width as usize;
+    let height = height_raw.unsigned_abs() as usize;
+    let top_down = height_raw < 0;
+    if bpp != 24 && bpp != 32 {
+        return Err(format!("unsupported bpp {}", bpp));
+    }
+
+    // Channel masks and the offset where pixel data begins.
+    let (r_mask, g_mask, b_mask, a_mask, pixel_start) = match compression {
+        0 => (0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0u32, header_size), // BI_RGB
+        3 => {
+            // BI_BITFIELDS: masks live at offset 40 — inside the header for
+            // V4+ (header_size >= 108), right after it for a 40-byte header.
+            if dib.len() < 52 {
+                return Err("missing bitfield masks".to_string());
+            }
+            let r = u32::from_le_bytes(dib[40..44].try_into().unwrap());
+            let g = u32::from_le_bytes(dib[44..48].try_into().unwrap());
+            let b = u32::from_le_bytes(dib[48..52].try_into().unwrap());
+            if header_size == 40 {
+                (r, g, b, 0u32, 52)
+            } else if header_size >= 108 {
+                let a = u32::from_le_bytes(dib[52..56].try_into().unwrap());
+                (r, g, b, a, header_size)
+            } else {
+                return Err("unsupported DIB header size".to_string());
+            }
+        }
+        c => return Err(format!("unsupported compression {}", c)),
+    };
+
+    let bytes_per_px = bpp / 8;
+    let stride = (width * bpp + 31) / 32 * 4; // rows are DWORD-aligned
+    if dib.len() < pixel_start + stride * height {
+        return Err("truncated pixel data".to_string());
+    }
+
+    let channel = |px: u32, mask: u32| -> u8 {
+        if mask == 0 {
+            return 255;
+        }
+        let shift = mask.trailing_zeros();
+        let max = mask >> shift;
+        (((px & mask) >> shift) * 255 / max) as u8
+    };
+
+    let mut buf = vec![0u8; width * height * 4];
+    for y in 0..height {
+        let src_row = if top_down { y } else { height - 1 - y };
+        let row_off = pixel_start + src_row * stride;
+        for x in 0..width {
+            let off = row_off + x * bytes_per_px;
+            let px = if bytes_per_px == 4 {
+                u32::from_le_bytes(dib[off..off + 4].try_into().unwrap())
+            } else {
+                (dib[off] as u32) | ((dib[off + 1] as u32) << 8) | ((dib[off + 2] as u32) << 16)
+            };
+            let dst = (y * width + x) * 4;
+            buf[dst] = channel(px, r_mask);
+            buf[dst + 1] = channel(px, g_mask);
+            buf[dst + 2] = channel(px, b_mask);
+            buf[dst + 3] = channel(px, a_mask);
+        }
+    }
+
+    image::RgbaImage::from_raw(width as u32, height as u32, buf)
+        .ok_or_else(|| "failed to build image".to_string())
+}
+
+/// Wrap a DIB in a proper 14-byte BMP file header so generic decoders can
+/// read it. Computes the real pixel-data offset (header + masks + palette).
+fn wrap_dib_as_bmp(dib: &[u8]) -> Option<Vec<u8>> {
+    if dib.len() < 12 {
+        return None;
+    }
+    let header_size = u32::from_le_bytes(dib[0..4].try_into().ok()?) as usize;
+    if header_size < 12 || dib.len() < header_size {
+        return None;
+    }
+
+    let mut extra = 0usize; // bytes between header end and pixel data
+    if header_size == 12 {
+        // BITMAPCOREHEADER: 3-byte palette entries for <= 8 bpp
+        let bpp = u16::from_le_bytes(dib[10..12].try_into().ok()?) as usize;
+        if bpp <= 8 {
+            extra = (1usize << bpp) * 3;
+        }
+    } else {
+        if dib.len() < 40 {
+            return None;
+        }
+        let bpp = u16::from_le_bytes(dib[14..16].try_into().ok()?) as usize;
+        let compression = u32::from_le_bytes(dib[16..20].try_into().ok()?);
+        let clr_used = u32::from_le_bytes(dib[32..36].try_into().ok()?) as usize;
+        if header_size == 40 {
+            if compression == 3 {
+                extra += 12; // BI_BITFIELDS masks follow the header
+            } else if compression == 6 {
+                extra += 16; // BI_ALPHABITFIELDS
+            }
+        }
+        if bpp <= 8 {
+            let colors = if clr_used > 0 { clr_used } else { 1usize << bpp };
+            extra += colors * 4;
+        }
+    }
+
+    if dib.len() < header_size + extra {
+        return None;
+    }
+    let pixel_offset = 14 + header_size + extra;
+
+    let mut bmp = Vec::with_capacity(14 + dib.len());
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&((14 + dib.len()) as u32).to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 4]); // reserved
+    bmp.extend_from_slice(&(pixel_offset as u32).to_le_bytes());
+    bmp.extend_from_slice(dib);
+    Some(bmp)
 }
 
 pub fn get_foreground_info() -> (String, String) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
     };
 
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0 == std::ptr::null_mut() {
+    if hwnd.0.is_null() {
         return (String::from("Unknown"), String::new());
     }
     unsafe {
         let mut buf = [0u16; 256];
         let len = GetWindowTextW(hwnd, &mut buf);
         let title = String::from_utf16_lossy(&buf[..len as usize]);
+
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        (String::from("Unknown"), title)
+        let exe = if pid == 0 {
+            String::from("Unknown")
+        } else {
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(process) => {
+                    let mut path_buf = [0u16; 512];
+                    let mut size = path_buf.len() as u32;
+                    let name = if QueryFullProcessImageNameW(
+                        process,
+                        PROCESS_NAME_WIN32,
+                        windows::core::PWSTR::from_raw(path_buf.as_mut_ptr()),
+                        &mut size,
+                    )
+                    .is_ok()
+                    {
+                        let full = String::from_utf16_lossy(&path_buf[..size as usize]);
+                        std::path::Path::new(&full)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| String::from("Unknown"))
+                    } else {
+                        String::from("Unknown")
+                    };
+                    let _ = CloseHandle(process);
+                    name
+                }
+                Err(_) => String::from("Unknown"),
+            }
+        };
+        (exe, title)
     }
 }
 
