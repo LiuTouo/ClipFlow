@@ -6,6 +6,11 @@
   <img src="clipflow_icon.svg" alt="ClipFlow" width="128" />
 </p>
 
+<p align="center">
+  <strong>專注工作流，不打断節奏的剪貼簿。</strong><br />
+  <sub>輕量 · 即速 · 專注</sub>
+</p>
+
 現代輕量 Windows 剪貼簿歷史工具。Tauri v2 + Vanilla TS/CSS，Raycast 風格浮動面板。完全免安裝——不寫登錄檔、不需要安裝程式。
 
 領域詞彙與行為規格請見 `CONTEXT.md`。

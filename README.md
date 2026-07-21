@@ -6,6 +6,11 @@
   <img src="clipflow_icon.svg" alt="ClipFlow" width="128" />
 </p>
 
+<p align="center">
+  <strong>A clipboard that keeps your workflow uninterrupted.</strong><br />
+  <sub>Lightweight · Instant · Focused</sub>
+</p>
+
 Modern lightweight Windows clipboard history tool. Tauri v2 + Vanilla TS/CSS, Raycast-style floating panel. Fully portable — no installation, no registry writes.
 
 See `CONTEXT.md` for the domain glossary and behavior spec.
