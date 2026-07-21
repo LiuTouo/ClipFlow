@@ -100,6 +100,9 @@ If phase 2 fails (target window vanished, etc.), the content remains on the clip
 ### Tray
 The system tray icon that indicates ClipFlow is running. Right-click opens a native context menu: Settings, About, Pause Monitoring, Quit.
 
+### Language
+All user-facing UI (Panel, Settings, About, tray menu) is localized via the `language` config option: `zh-TW` (Traditional Chinese, default) or `en`. Frontend pages share one dictionary (`src/i18n.ts`); the Panel re-applies the language whenever it regains focus, and the tray menu labels update immediately when the setting changes.
+
 ### Portable
 ClipFlow runs without installation or registry writes. All configuration and data live alongside the executable. Startup is achieved via a `.lnk` shortcut in `shell:startup` with `--hidden` flag — no registry Run key.
 

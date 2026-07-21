@@ -10,13 +10,13 @@
     <div id="panel">
       <div class="search-container">
         <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="search-input" type="text" placeholder="Search clipboard history..." autofocus spellcheck="false" />
+        <input id="search-input" type="text" placeholder="搜尋剪貼簿歷史…" data-i18n-placeholder="searchPlaceholder" autofocus spellcheck="false" />
       </div>
       <div id="clip-list"></div>
       <div id="empty-state" class="hidden">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        <p>No clipboard history yet</p>
-        <span>Copy something to get started</span>
+        <p data-i18n="emptyTitle">尚無剪貼簿歷史</p>
+        <span data-i18n="emptyHint">複製一些內容就會出現在這裡</span>
       </div>
       <div id="toast" class="toast hidden"></div>
     </div>

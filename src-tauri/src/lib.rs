@@ -16,6 +16,43 @@ struct AppState {
     monitor_running: Arc<Mutex<bool>>,
     last_deleted: Arc<Mutex<Option<Clip>>>,
     persistence: Arc<Mutex<Option<Persistence>>>,
+    tray_items: Arc<Mutex<Option<TrayMenuItems>>>,
+}
+
+/// Handles to the tray menu items, kept so their labels can be re-localized
+/// when the UI language changes.
+struct TrayMenuItems {
+    pause: tauri::menu::MenuItem<tauri::Wry>,
+    settings: tauri::menu::MenuItem<tauri::Wry>,
+    about: tauri::menu::MenuItem<tauri::Wry>,
+    quit: tauri::menu::MenuItem<tauri::Wry>,
+}
+
+struct TrayLabels {
+    pause: &'static str,
+    resume: &'static str,
+    settings: &'static str,
+    about: &'static str,
+    quit: &'static str,
+}
+
+fn tray_labels(lang: &str) -> TrayLabels {
+    match lang {
+        "en" => TrayLabels {
+            pause: "Pause Monitoring",
+            resume: "Resume Monitoring",
+            settings: "Settings",
+            about: "About",
+            quit: "Quit",
+        },
+        _ => TrayLabels {
+            pause: "暫停監聽",
+            resume: "繼續監聽",
+            settings: "設定",
+            about: "關於",
+            quit: "結束",
+        },
+    }
 }
 
 /// Write-through to SQLite when persistence is enabled. Failures are
@@ -124,9 +161,9 @@ fn rollback_persist(state: &AppState, failed_new_value: bool) {
 
 #[tauri::command]
 fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
-    let (old_hotkey, old_startup, old_persist) = {
+    let (old_hotkey, old_startup, old_persist, old_language) = {
         let config = state.config.lock().unwrap();
-        (config.hotkey.clone(), config.startup, config.persist)
+        (config.hotkey.clone(), config.startup, config.persist, config.language.clone())
     };
     let mut swapped_hotkey = false;
     let mut swapped_startup = false;
@@ -190,6 +227,19 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
             rollback_hotkey_swap(&app, &new_config.hotkey, &old_hotkey);
         }
         return Err(e);
+    }
+
+    // 5. Config is on disk — sync cosmetic runtime state (tray menu labels).
+    if new_config.language != old_language {
+        let labels = tray_labels(&new_config.language);
+        let running = *state.monitor_running.lock().unwrap();
+        let items = state.tray_items.lock().unwrap();
+        if let Some(items) = items.as_ref() {
+            let _ = items.pause.set_text(if running { labels.pause } else { labels.resume });
+            let _ = items.settings.set_text(labels.settings);
+            let _ = items.about.set_text(labels.about);
+            let _ = items.quit.set_text(labels.quit);
+        }
     }
 
     let mut config = state.config.lock().unwrap();
@@ -466,6 +516,7 @@ pub fn run(_hidden: bool) {
     let monitor_running = Arc::new(Mutex::new(true));
     let last_deleted = Arc::new(Mutex::new(None));
     let persistence = Arc::new(Mutex::new(persistence));
+    let tray_items = Arc::new(Mutex::new(None));
 
     log("[ClipFlow] run() called");
 
@@ -478,6 +529,7 @@ pub fn run(_hidden: bool) {
             monitor_running: monitor_running.clone(),
             last_deleted: last_deleted.clone(),
             persistence: persistence.clone(),
+            tray_items: tray_items.clone(),
         })
         .setup(move |app| {
             let resource_dir = app.path().resource_dir().unwrap_or_default();
@@ -516,10 +568,13 @@ pub fn run(_hidden: bool) {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
             use tauri::tray::TrayIconBuilder;
 
-            let pause_item = MenuItemBuilder::with_id("pause", "Pause Monitoring").build(app)?;
-            let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
-            let about_item = MenuItemBuilder::with_id("about", "About").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let tray_lang = config_store.lock().unwrap().language.clone();
+            let labels = tray_labels(&tray_lang);
+
+            let pause_item = MenuItemBuilder::with_id("pause", labels.pause).build(app)?;
+            let settings_item = MenuItemBuilder::with_id("settings", labels.settings).build(app)?;
+            let about_item = MenuItemBuilder::with_id("about", labels.about).build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", labels.quit).build(app)?;
 
             let menu = MenuBuilder::new(app)
                 .item(&pause_item)
@@ -543,10 +598,12 @@ pub fn run(_hidden: bool) {
                             let state = app.state::<AppState>();
                             let mut running = state.monitor_running.lock().unwrap();
                             *running = !*running;
+                            let lang = state.config.lock().unwrap().language.clone();
+                            let labels = tray_labels(&lang);
                             let _ = pause_item_handle.set_text(if *running {
-                                "Pause Monitoring"
+                                labels.pause
                             } else {
-                                "Resume Monitoring"
+                                labels.resume
                             });
                         }
                         "settings" => {
@@ -563,6 +620,14 @@ pub fn run(_hidden: bool) {
                 })
                 .build(app)?;
             log("[ClipFlow] tray built successfully");
+
+            // Keep item handles so labels can be re-localized on language change.
+            *tray_items.lock().unwrap() = Some(TrayMenuItems {
+                pause: pause_item.clone(),
+                settings: settings_item.clone(),
+                about: about_item.clone(),
+                quit: quit_item.clone(),
+            });
 
             Ok(())
         })

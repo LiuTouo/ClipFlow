@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { initLanguage, applyI18n, t } from "./i18n";
 
 interface Clip {
   id: string;
@@ -31,8 +32,22 @@ const toast = document.getElementById("toast")!;
 
 // === Init ===
 async function init() {
+  await initLanguage();
+  applyI18n();
+
   clips = await invoke("get_clips");
   render();
+
+  // The Panel is reused via hide/show — re-apply the language every time it
+  // regains focus so changes made in Settings take effect on next open.
+  await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+    if (focused) {
+      initLanguage().then(() => {
+        applyI18n();
+        render();
+      });
+    }
+  });
 
   // Listen for clipboard updates
   await listen<Clip>("clipboard-update", (event) => {
@@ -80,7 +95,7 @@ function render() {
       // Insert divider
       const divider = document.createElement("div");
       divider.className = "pinned-divider";
-      divider.textContent = "Pinned";
+      divider.textContent = t("pinnedDivider");
       clipList.appendChild(divider);
       hasUnpinned = true;
     }
@@ -121,7 +136,9 @@ function render() {
     const title = document.createElement("div");
     title.className = "clip-title";
     let titleText = clip.preview || "(empty)";
-    if (clip.kind === "Text") {
+    if (clip.kind === "Image") {
+      titleText = t("imageClip");
+    } else if (clip.kind === "Text") {
       titleText = titleText.replace(/\n/g, " ");
     }
     title.textContent = titleText;
@@ -131,7 +148,9 @@ function render() {
     meta.className = "clip-meta";
     const source = document.createElement("span");
     source.className = "source";
-    source.textContent = clip.source_exe || "Unknown";
+    source.textContent = !clip.source_exe || clip.source_exe === "Unknown"
+      ? t("unknownSource")
+      : clip.source_exe;
     meta.appendChild(source);
 
     const size = document.createElement("span");
@@ -156,7 +175,7 @@ function render() {
     const pinBtn = document.createElement("button");
     pinBtn.className = `clip-action-btn pin-btn${clip.pinned ? " pinned" : ""}`;
     pinBtn.innerHTML = "📌";
-    pinBtn.title = clip.pinned ? "Unpin" : "Pin";
+    pinBtn.title = clip.pinned ? t("unpinTitle") : t("pinTitle");
     pinBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       togglePin(clip);
@@ -166,7 +185,7 @@ function render() {
     const copyBtn = document.createElement("button");
     copyBtn.className = "clip-action-btn";
     copyBtn.innerHTML = "📋";
-    copyBtn.title = "Copy only";
+    copyBtn.title = t("copyOnlyTitle");
     copyBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       copyOnly(clip);
@@ -176,7 +195,7 @@ function render() {
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "clip-action-btn delete-btn";
     deleteBtn.innerHTML = "🗑";
-    deleteBtn.title = "Delete";
+    deleteBtn.title = t("deleteTitle");
     deleteBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       deleteClip(clip);
@@ -228,7 +247,7 @@ async function copyOnly(clip: Clip) {
         }
         break;
     }
-    showToast("Copied to clipboard");
+    showToast(t("copied"));
   } catch (err) {
     console.error("Copy failed:", err);
   }
@@ -244,7 +263,7 @@ async function deleteClip(clip: Clip) {
     render();
 
     // Show undo toast
-    showToast('Deleted <button class="undo-btn">Undo</button>', async () => {
+    showToast(t("deleted"), async () => {
       await invoke("undo_delete");
       clips = await invoke("get_clips");
       render();
@@ -280,7 +299,7 @@ function showToast(message: string, onUndo?: () => void) {
   if (onUndo) {
     const undoBtn = document.createElement("button");
     undoBtn.className = "undo-btn";
-    undoBtn.textContent = "Undo";
+    undoBtn.textContent = t("undo");
     undoBtn.addEventListener("click", () => {
       onUndo();
       hideToast();
@@ -292,7 +311,7 @@ function showToast(message: string, onUndo?: () => void) {
 
   toastTimer = setTimeout(() => {
     hideToast();
-  }, 3000);
+  }, 4000);
 }
 
 function hideToast() {
@@ -308,11 +327,11 @@ function formatTime(ts: number): string {
   const min = Math.floor(sec / 60);
   const hr = Math.floor(min / 60);
 
-  if (sec < 60) return "just now";
-  if (min < 60) return `${min}m ago`;
-  if (hr < 24) return `${hr}h ago`;
+  if (sec < 60) return t("justNow");
+  if (min < 60) return t("minutesAgo", { n: min });
+  if (hr < 24) return t("hoursAgo", { n: hr });
   const days = Math.floor(hr / 24);
-  return `${days}d ago`;
+  return t("daysAgo", { n: days });
 }
 
 // === Keyboard Navigation ===
