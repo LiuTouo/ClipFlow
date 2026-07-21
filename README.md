@@ -13,6 +13,8 @@
 
 Modern lightweight Windows clipboard history tool. Tauri v2 + Vanilla TS/CSS, Raycast-style floating panel. Fully portable — no installation, no registry writes.
 
+A tool purpose-built for the most frequent action in modern AI VibeCoding — copying.
+
 See `CONTEXT.md` for the domain glossary and behavior spec.
 
 ## Features

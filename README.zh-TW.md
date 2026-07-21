@@ -13,6 +13,8 @@
 
 現代輕量 Windows 剪貼簿歷史工具。Tauri v2 + Vanilla TS/CSS，Raycast 風格浮動面板。完全免安裝——不寫登錄檔、不需要安裝程式。
 
+一個專為現代 AI VibeCoding 最常用到的動作「複製」而生的工具。
+
 領域詞彙與行為規格請見 `CONTEXT.md`。
 
 ## 功能
