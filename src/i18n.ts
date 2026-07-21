@@ -55,6 +55,7 @@ const I18N: Record<string, Record<string, string>> = {
     // About
     aboutTitle: "關於 ClipFlow",
     tagline: "現代、輕量的 Windows 剪貼簿歷史工具。",
+    changelog: "更新日誌",
   },
   en: {
     // Settings page
@@ -106,6 +107,7 @@ const I18N: Record<string, Record<string, string>> = {
     // About
     aboutTitle: "About ClipFlow",
     tagline: "A modern, lightweight clipboard history tool for Windows.",
+    changelog: "Changelog",
   },
 };
 

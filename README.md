@@ -80,6 +80,12 @@ Output: `src-tauri/target/release/clipflow.exe` (~15 MB, frontend assets embedde
 npm run tauri dev
 ```
 
+## Release
+
+1. Bump `version` in `src-tauri/Cargo.toml` (the single source of truth — `tauri.conf.json` reads it from there).
+2. Add an entry to `CHANGELOG.md`.
+3. `npm run build:app`, commit & push. The About page picks up the new version automatically.
+
 ## Project structure
 
 ```

@@ -80,6 +80,12 @@ npm run build:app
 npm run tauri dev
 ```
 
+## 發版流程
+
+1. 修改 `src-tauri/Cargo.toml` 的 `version`（版本單一來源，`tauri.conf.json` 會自動讀取）。
+2. 在 `CHANGELOG.md` 新增該版本的條目。
+3. `npm run build:app`，commit 並 push。關於頁會自動顯示新版本號。
+
 ## 專案結構
 
 ```

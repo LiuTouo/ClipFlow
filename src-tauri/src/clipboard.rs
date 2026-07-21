@@ -44,7 +44,7 @@ pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, String> {
         }
     }
 
-    if let Ok(clip) = try_capture_image(&source_exe, &source_title, now) {
+    if let Ok(clip) = try_capture_image(config, &source_exe, &source_title, now) {
         return Ok(clip);
     }
     if let Ok(clip) = try_capture_file_paths(&source_exe, &source_title, now) {
@@ -57,7 +57,7 @@ pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, String> {
     Err("No supported clipboard format".to_string())
 }
 
-fn try_capture_image(source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
+fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
     unsafe {
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
             return Err("Cannot open clipboard".to_string());
@@ -83,6 +83,20 @@ fn try_capture_image(source_exe: &str, source_title: &str, now: u64) -> Result<C
         global_unlock(handle);
         let _ = CloseClipboard();
 
+        // Enforce the per-image size limit: oversized images are downscaled
+        // and re-encoded as 24bpp DIB, so even pinned images stay bounded.
+        let limit = (config.image_size_limit_mb as usize) * 1024 * 1024;
+        let dib_data = if dib_data.len() > limit {
+            match decode_clipboard_image(&dib_data) {
+                Ok(img) => downscale_to_limit(&img, limit),
+                // Can't process what we can't decode — keep the original bytes.
+                Err(_) => dib_data,
+            }
+        } else {
+            dib_data
+        };
+
+        let byte_size = dib_data.len() as u64;
         let thumbnail_base64 = generate_thumbnail(&dib_data).unwrap_or_default();
         let content_hash = hash_content(&dib_data);
 
@@ -100,7 +114,7 @@ fn try_capture_image(source_exe: &str, source_title: &str, now: u64) -> Result<C
             source_icon: None,
             captured_at: now,
             pinned: false,
-            byte_size: mem_size as u64,
+            byte_size,
         })
     }
 }
@@ -240,12 +254,10 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
     }
 }
 
-fn generate_thumbnail(dib_data: &[u8]) -> Result<String, String> {
-    use base64::Engine;
-    use image::GenericImageView;
-    use image::ImageEncoder;
-
-    let dyn_img = decode_dib(dib_data)
+/// Decode raw CF_DIB bytes into a DynamicImage: manual decoder first
+/// (24/32bpp BI_RGB / BI_BITFIELDS), BMP-wrap fallback for exotic layouts.
+fn decode_clipboard_image(dib_data: &[u8]) -> Result<image::DynamicImage, String> {
+    decode_dib(dib_data)
         .map(image::DynamicImage::ImageRgba8)
         .or_else(|_| {
             // Fallback for palette-based or unusually-headed DIBs: wrap with a
@@ -253,7 +265,73 @@ fn generate_thumbnail(dib_data: &[u8]) -> Result<String, String> {
             let bmp = wrap_dib_as_bmp(dib_data)
                 .ok_or_else(|| "unsupported DIB layout".to_string())?;
             image::load_from_memory(&bmp).map_err(|e| format!("BMP decode: {}", e))
-        })?;
+        })
+}
+
+/// Re-encode an image as a 24bpp BI_RGB DIB (BITMAPINFOHEADER + bottom-up
+/// BGR pixel data, DWORD-aligned rows). Alpha is dropped.
+fn encode_dib_24bpp(img: &image::DynamicImage) -> Vec<u8> {
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width() as usize, rgb.height() as usize);
+    let stride = (w * 3 + 3) / 4 * 4;
+    let pixel_bytes = stride * h;
+
+    let mut out = Vec::with_capacity(40 + pixel_bytes);
+    out.extend_from_slice(&40u32.to_le_bytes());                // biSize
+    out.extend_from_slice(&(w as i32).to_le_bytes());           // biWidth
+    out.extend_from_slice(&(h as i32).to_le_bytes());           // biHeight (bottom-up)
+    out.extend_from_slice(&1u16.to_le_bytes());                 // biPlanes
+    out.extend_from_slice(&24u16.to_le_bytes());                // biBitCount
+    out.extend_from_slice(&0u32.to_le_bytes());                 // biCompression = BI_RGB
+    out.extend_from_slice(&(pixel_bytes as u32).to_le_bytes()); // biSizeImage
+    out.extend_from_slice(&2835i32.to_le_bytes());              // biXPelsPerMeter (~72 DPI)
+    out.extend_from_slice(&2835i32.to_le_bytes());              // biYPelsPerMeter
+    out.extend_from_slice(&0u32.to_le_bytes());                 // biClrUsed
+    out.extend_from_slice(&0u32.to_le_bytes());                 // biClrImportant
+
+    let padding = [0u8; 3];
+    let pad_len = stride - w * 3;
+    let raw = rgb.as_raw();
+    for y in (0..h).rev() {
+        let row = &raw[y * w * 3..(y + 1) * w * 3];
+        for px in row.chunks_exact(3) {
+            out.push(px[2]); // B
+            out.push(px[1]); // G
+            out.push(px[0]); // R
+        }
+        out.extend_from_slice(&padding[..pad_len]);
+    }
+    out
+}
+
+/// Downscale until the 24bpp DIB encoding fits within `limit` bytes.
+fn downscale_to_limit(img: &image::DynamicImage, limit: usize) -> Vec<u8> {
+    let first = encode_dib_24bpp(img);
+    if first.len() <= limit {
+        return first;
+    }
+    // Estimate a starting scale from the byte ratio (bytes ~ pixels), with margin.
+    let mut scale = ((limit as f64 / first.len() as f64).sqrt() * 0.9).max(0.05);
+    let mut cur = img.clone();
+    for _ in 0..10 {
+        let nw = ((img.width() as f64 * scale) as u32).max(1);
+        let nh = ((img.height() as f64 * scale) as u32).max(1);
+        cur = img.resize(nw, nh, image::imageops::FilterType::Lanczos3);
+        let dib = encode_dib_24bpp(&cur);
+        if dib.len() <= limit {
+            return dib;
+        }
+        scale *= 0.85;
+    }
+    encode_dib_24bpp(&cur)
+}
+
+fn generate_thumbnail(dib_data: &[u8]) -> Result<String, String> {
+    use base64::Engine;
+    use image::GenericImageView;
+    use image::ImageEncoder;
+
+    let dyn_img = decode_clipboard_image(dib_data)?;
 
     let (w, h) = dyn_img.dimensions();
     if w == 0 || h == 0 {
