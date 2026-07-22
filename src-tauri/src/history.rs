@@ -81,6 +81,12 @@ impl HistoryStore {
         }
     }
 
+    /// Look up a Clip by content hash (used to preserve the original source
+    /// app when the monitor re-captures content ClipFlow itself wrote).
+    pub fn find_by_hash(&self, content_hash: &str) -> Option<Clip> {
+        self.clips.iter().find(|c| c.content_hash == content_hash).cloned()
+    }
+
     pub fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<(), String> {
         if pinned {
             let pin_count = self.clips.iter().filter(|c| c.pinned).count();

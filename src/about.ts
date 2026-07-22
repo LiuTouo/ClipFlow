@@ -1,11 +1,18 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-shell";
 import { initLanguage, applyI18n, t } from "./i18n";
+import { applyTheme } from "./theme";
 
 async function init() {
   await initLanguage();
   applyI18n();
   document.title = t("aboutTitle");
+
+  try {
+    const config = await invoke<{ theme?: string }>("get_config");
+    applyTheme(config.theme || "system");
+  } catch (_) {}
 
   // Version comes from the single source of truth (Cargo.toml via app config).
   try {

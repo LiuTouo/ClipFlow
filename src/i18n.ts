@@ -34,6 +34,7 @@ const I18N: Record<string, Record<string, string>> = {
     cancel: "取消",
     pressKeys: "請按下按鍵…",
     hotkeyInUse: "此按鍵組合已被其他應用程式使用",
+    hotkeyNeedModifier: "快捷鍵需包含 Ctrl、Shift 或 Alt 至少一個",
     // Panel
     searchPlaceholder: "搜尋剪貼簿歷史…",
     emptyTitle: "尚無剪貼簿歷史",
@@ -86,6 +87,7 @@ const I18N: Record<string, Record<string, string>> = {
     cancel: "Cancel",
     pressKeys: "Press keys...",
     hotkeyInUse: "This combination is already in use",
+    hotkeyNeedModifier: "Hotkey must include at least one of Ctrl, Shift, or Alt",
     // Panel
     searchPlaceholder: "Search clipboard history...",
     emptyTitle: "No clipboard history yet",

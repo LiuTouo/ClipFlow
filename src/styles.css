@@ -29,8 +29,12 @@
   --divider-color: rgba(0, 0, 0, 0.06);
 }
 
+/* Dark theme, two triggers:
+   - @media: system is dark and the user did not force light
+   - [data-theme="dark"]: user forced dark in Settings
+   (Kept in sync by hand — CSS has no way to share a var block.) */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg-primary: #1c1c1e;
     --bg-secondary: #2c2c2e;
@@ -53,6 +57,30 @@
     --glass-border: rgba(255, 255, 255, 0.06);
     --divider-color: rgba(255, 255, 255, 0.06);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: #1c1c1e;
+  --bg-secondary: #2c2c2e;
+  --bg-hover: #3a3a3c;
+  --bg-active: #48484a;
+  --bg-pinned: rgba(99, 102, 241, 0.1);
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1a6;
+  --text-tertiary: #636366;
+  --border-color: rgba(255, 255, 255, 0.08);
+  --accent: #818cf8;
+  --accent-hover: #6366f1;
+  --danger: #f87171;
+  --danger-hover: #ef4444;
+  --warning: #fbbf24;
+  --warning-bg: rgba(251, 191, 36, 0.1);
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --glass-bg: rgba(28, 28, 30, 0.96);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --divider-color: rgba(255, 255, 255, 0.06);
 }
 
 /* === Reset === */

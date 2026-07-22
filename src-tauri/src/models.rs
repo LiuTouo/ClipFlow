@@ -7,7 +7,10 @@ pub struct Clip {
     pub kind: ClipKind,
     /// Raw text content (text Clips) or semicolon-separated paths (FilePaths Clips)
     pub text_content: Option<String>,
-    /// Compressed image data (DIB format) for Image Clips
+    /// Compressed image data (DIB format) for Image Clips.
+    /// Never serialized: raw images must not cross the IPC bridge as JSON
+    /// number arrays (10MB → ~30MB JSON). Paste fetches the bytes by id.
+    #[serde(skip_serializing)]
     pub image_data: Option<Vec<u8>>,
     /// Base64-encoded JPEG thumbnail (200px wide) for Image Clips
     pub thumbnail_base64: Option<String>,
@@ -36,6 +39,15 @@ pub enum ClipKind {
     Text,
     Image,
     FilePaths,
+}
+
+/// Payload of the `clipboard-update` event: the freshly captured Clip plus
+/// the ids of any Clips evicted by capacity limits, so the frontend can drop
+/// them and stay in sync with the backend History.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipboardUpdate {
+    pub clip: Clip,
+    pub evicted: Vec<String>,
 }
 
 impl Clip {

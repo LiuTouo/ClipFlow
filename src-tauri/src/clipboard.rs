@@ -5,10 +5,18 @@ use windows::Win32::System::DataExchange::{
     OpenClipboard, CloseClipboard, GetClipboardData, EmptyClipboard, SetClipboardData,
 };
 
-const CF_TEXT: u32 = 1;
 const CF_DIB: u32 = 8;
 const CF_UNICODETEXT: u32 = 13;
 const CF_HDROP: u32 = 15;
+
+/// Why a capture attempt failed. `Locked` means the clipboard is held by
+/// another app — transient, worth retrying on the next poll. `Skip` means
+/// the content is definitively not capturable (unsupported format, excluded
+/// source) — the sequence number should be consumed so we don't retry.
+pub enum CaptureError {
+    Locked,
+    Skip(String),
+}
 
 // Raw kernel32 memory functions — HANDLE.0 is isize
 extern "system" {
@@ -16,6 +24,7 @@ extern "system" {
     fn GlobalLock(hMem: isize) -> *mut std::ffi::c_void;
     fn GlobalUnlock(hMem: isize) -> i32;
     fn GlobalAlloc(uFlags: u32, dwBytes: usize) -> isize;
+    fn GlobalFree(hMem: isize) -> isize;
 }
 
 // Helper: GetClipboardData returns HANDLE, HANDLE.0 is *mut c_void
@@ -23,6 +32,7 @@ unsafe fn global_size(h: HANDLE) -> usize { GlobalSize(h.0 as isize) }
 unsafe fn global_lock(h: HANDLE) -> *mut std::ffi::c_void { GlobalLock(h.0 as isize) }
 unsafe fn global_unlock(h: HANDLE) -> i32 { GlobalUnlock(h.0 as isize) }
 unsafe fn global_alloc(flags: u32, bytes: usize) -> isize { GlobalAlloc(flags, bytes) }
+unsafe fn global_free(h: isize) { GlobalFree(h); }
 
 pub fn hash_content(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -30,7 +40,7 @@ pub fn hash_content(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, String> {
+pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, CaptureError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -40,44 +50,59 @@ pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, String> {
 
     for excluded in &config.exclusion_list {
         if source_exe.to_lowercase() == excluded.to_lowercase() {
-            return Err("Source is excluded".to_string());
+            return Err(CaptureError::Skip("Source is excluded".to_string()));
         }
     }
 
-    if let Ok(clip) = try_capture_image(config, &source_exe, &source_title, now) {
-        return Ok(clip);
-    }
-    if let Ok(clip) = try_capture_file_paths(&source_exe, &source_title, now) {
-        return Ok(clip);
-    }
-    if let Ok(clip) = try_capture_text(config, &source_exe, &source_title, now) {
-        return Ok(clip);
+    // Try each format in priority order. A Locked result from any attempt
+    // makes the whole capture Locked — the clipboard owner may be holding it
+    // open, so the caller should retry rather than consume the sequence.
+    let mut locked = false;
+    for result in [
+        try_capture_image(config, &source_exe, &source_title, now),
+        try_capture_file_paths(&source_exe, &source_title, now),
+        try_capture_text(config, &source_exe, &source_title, now),
+    ] {
+        match result {
+            Ok(clip) => return Ok(clip),
+            Err(CaptureError::Locked) => locked = true,
+            Err(CaptureError::Skip(_)) => {}
+        }
     }
 
-    Err("No supported clipboard format".to_string())
+    if locked {
+        Err(CaptureError::Locked)
+    } else {
+        Err(CaptureError::Skip("No supported clipboard format".to_string()))
+    }
 }
 
-fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
+fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, CaptureError> {
     unsafe {
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
-            return Err("Cannot open clipboard".to_string());
+            return Err(CaptureError::Locked);
         }
 
         // NOTE: CF_BITMAP is intentionally not used — it returns an HBITMAP
         // (a GDI object handle), not an HGLOBAL memory block, so it cannot be
         // read through GlobalSize/GlobalLock.
-        let handle = GetClipboardData(CF_DIB)
-            .map_err(|_| "No DIB image on clipboard".to_string())?;
+        let handle = match GetClipboardData(CF_DIB) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = CloseClipboard();
+                return Err(CaptureError::Skip("No DIB image on clipboard".to_string()));
+            }
+        };
 
         let mem_size = global_size(handle);
         if mem_size == 0 {
             let _ = CloseClipboard();
-            return Err("Empty image data".to_string());
+            return Err(CaptureError::Skip("Empty image data".to_string()));
         }
         let ptr = global_lock(handle);
         if ptr.is_null() {
             let _ = CloseClipboard();
-            return Err("Cannot lock image data".to_string());
+            return Err(CaptureError::Skip("Cannot lock image data".to_string()));
         }
         let dib_data = std::slice::from_raw_parts(ptr as *const u8, mem_size).to_vec();
         global_unlock(handle);
@@ -119,16 +144,26 @@ fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, n
     }
 }
 
-fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
+fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Result<Clip, CaptureError> {
     use windows::Win32::UI::Shell::DROPFILES;
 
     unsafe {
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
-            return Err("Cannot open clipboard".to_string());
+            return Err(CaptureError::Locked);
         }
 
-        let handle = GetClipboardData(CF_HDROP).map_err(|_| "No HDROP".to_string())?;
+        let handle = match GetClipboardData(CF_HDROP) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = CloseClipboard();
+                return Err(CaptureError::Skip("No HDROP".to_string()));
+            }
+        };
         let ptr = global_lock(handle);
+        if ptr.is_null() {
+            let _ = CloseClipboard();
+            return Err(CaptureError::Skip("Cannot lock HDROP data".to_string()));
+        }
         let dropfiles = &*(ptr as *const DROPFILES);
         let file_offset = dropfiles.pFiles as usize;
         let base = ptr as usize + file_offset;
@@ -189,17 +224,28 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
     }
 }
 
-fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, String> {
+fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, CaptureError> {
     unsafe {
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
-            return Err("Cannot open clipboard".to_string());
+            return Err(CaptureError::Locked);
         }
 
-        let handle = GetClipboardData(CF_UNICODETEXT)
-            .or_else(|_| GetClipboardData(CF_TEXT))
-            .map_err(|_| "No text".to_string())?;
+        // CF_TEXT (ANSI) is intentionally not used as a fallback: the read
+        // loop below decodes UTF-16, and virtually every modern app puts
+        // CF_UNICODETEXT on the clipboard. Skipping is better than mojibake.
+        let handle = match GetClipboardData(CF_UNICODETEXT) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = CloseClipboard();
+                return Err(CaptureError::Skip("No text".to_string()));
+            }
+        };
 
         let ptr = global_lock(handle);
+        if ptr.is_null() {
+            let _ = CloseClipboard();
+            return Err(CaptureError::Skip("Cannot lock text data".to_string()));
+        }
         let mut chars = Vec::new();
         let mut p = ptr as *const u16;
         loop {
@@ -565,9 +611,14 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
         GlobalUnlock(hmem);
 
-        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() { return Err("Cannot open".to_string()); }
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
+            global_free(hmem);
+            return Err("Cannot open".to_string());
+        }
         let _ = EmptyClipboard();
         if SetClipboardData(CF_UNICODETEXT, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
+            // SetClipboardData failed: ownership never transferred, free it.
+            global_free(hmem);
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
@@ -584,20 +635,19 @@ pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
         GlobalUnlock(hmem);
 
-        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() { return Err("Cannot open".to_string()); }
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
+            global_free(hmem);
+            return Err("Cannot open".to_string());
+        }
         let _ = EmptyClipboard();
         if SetClipboardData(CF_DIB, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
+            global_free(hmem);
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
         let _ = CloseClipboard();
         Ok(())
     }
-}
-
-pub fn write_file_paths_to_clipboard(paths_str: &str) -> Result<(), String> {
-    let paths: Vec<&str> = paths_str.split(';').collect();
-    write_text_to_clipboard(&paths.join("\n"))
 }
 
 pub fn simulate_ctrl_v() {

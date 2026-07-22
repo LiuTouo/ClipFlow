@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyI18n, setLanguage, t } from "./i18n";
+import { applyTheme } from "./theme";
 
 interface AppConfig {
   text_size_limit_kb: number;
@@ -23,6 +24,7 @@ let config: AppConfig;
 async function init() {
   config = await invoke("get_config");
   setLanguage(config.language || "zh-TW");
+  applyTheme(config.theme || "system");
   populateForm();
   applyI18n();
   document.title = `ClipFlow ${t("settings")}`;
@@ -63,6 +65,11 @@ function bindEvents() {
     setLanguage((e.target as HTMLSelectElement).value);
     applyI18n();
     document.title = `ClipFlow ${t("settings")}`;
+  });
+
+  // Live theme preview
+  document.getElementById("setting-theme")!.addEventListener("change", (e) => {
+    applyTheme((e.target as HTMLSelectElement).value);
   });
 
   document.getElementById("settings-form")!.addEventListener("submit", async (e) => {
@@ -127,12 +134,19 @@ function bindEvents() {
     if (e.altKey) parts.push("Alt");
 
     const key = e.key;
-    if (key !== "Control" && key !== "Shift" && key !== "Alt") {
+    const isModifier = key === "Control" || key === "Shift" || key === "Alt";
+    if (!isModifier) {
       parts.push(key.length === 1 ? key.toUpperCase() : key);
-    }
 
-    if (parts.length > 0) {
-      hotkeyInput.value = parts.join("+");
+      if (parts.length === 1) {
+        // Bare key without a modifier — as a global shortcut it would make
+        // that key unusable in every other application.
+        showError(t("hotkeyNeedModifier"));
+        hotkeyInput.value = config.hotkey;
+      } else {
+        clearError();
+        hotkeyInput.value = parts.join("+");
+      }
       hotkeyInput.classList.remove("recording");
       hotkeyInput.readOnly = false;
     }

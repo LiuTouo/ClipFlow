@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { initLanguage, applyI18n, t } from "./i18n";
+import { setLanguage, applyI18n, t } from "./i18n";
+import { applyTheme } from "./theme";
 
 interface Clip {
   id: string;
   kind: "Text" | "Image" | "FilePaths";
   text_content: string | null;
-  image_data: number[] | null;
+  // Raw image bytes never cross IPC — paste/copy fetch them by id.
   thumbnail_base64: string | null;
   content_hash: string;
   preview: string;
@@ -20,7 +21,16 @@ interface Clip {
   byte_size: number;
 }
 
+interface ClipboardUpdate {
+  clip: Clip;
+  evicted: string[];
+}
+
 let clips: Clip[] = [];
+// The search-filtered view of clips, in display order. Keyboard selection
+// indexes into this — never into `clips` directly, or search + Enter pastes
+// the wrong item.
+let visibleClips: Clip[] = [];
 let selectedIndex = -1;
 let vimMode = false;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -31,18 +41,35 @@ const emptyState = document.getElementById("empty-state")!;
 const toast = document.getElementById("toast")!;
 
 // === Init ===
+/** Pull the live config into the page: language, vim mode, theme. */
+async function refreshConfig() {
+  try {
+    const config = await invoke<{ language?: string; vim_mode?: boolean; theme?: string }>("get_config");
+    setLanguage(config.language || "zh-TW");
+    vimMode = !!config.vim_mode;
+    applyTheme(config.theme || "system");
+  } catch (_) {
+    setLanguage("zh-TW");
+  }
+}
+
+/** Pinned first, then newest — matches backend HistoryStore::get_all. */
+function sortClips() {
+  clips.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.captured_at - a.captured_at);
+}
+
 async function init() {
-  await initLanguage();
+  await refreshConfig();
   applyI18n();
 
   clips = await invoke("get_clips");
   render();
 
-  // The Panel is reused via hide/show — re-apply the language every time it
+  // The Panel is reused via hide/show — re-apply the config every time it
   // regains focus so changes made in Settings take effect on next open.
   await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
     if (focused) {
-      initLanguage().then(() => {
+      refreshConfig().then(() => {
         applyI18n();
         render();
       });
@@ -50,8 +77,8 @@ async function init() {
   });
 
   // Listen for clipboard updates
-  await listen<Clip>("clipboard-update", (event) => {
-    const clip = event.payload;
+  await listen<ClipboardUpdate>("clipboard-update", (event) => {
+    const { clip, evicted } = event.payload;
     // Dedup locally
     const existingIndex = clips.findIndex(c => c.content_hash === clip.content_hash);
     if (existingIndex >= 0) {
@@ -59,16 +86,17 @@ async function init() {
     } else {
       clips.unshift(clip);
     }
-    // Match backend ordering: pinned first, then newest captured_at.
-    clips.sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.captured_at - a.captured_at);
+    // Drop clips the backend evicted by capacity limits (possibly the new
+    // clip itself), so the panel never shows ghosts.
+    if (evicted.length > 0) {
+      clips = clips.filter(c => !evicted.includes(c.id));
+      if (selectedIndex >= clips.length) {
+        selectedIndex = clips.length - 1;
+      }
+    }
+    sortClips();
     render();
   });
-
-  // Load vim mode setting
-  try {
-    const config = await invoke("get_config") as any;
-    vimMode = config.vim_mode;
-  } catch (_) {}
 }
 
 // === Render ===
@@ -80,6 +108,7 @@ function render() {
       || c.source_exe.toLowerCase().includes(query)
       || c.source_title.toLowerCase().includes(query);
   });
+  visibleClips = filtered;
 
   clipList.innerHTML = "";
   emptyState.classList.toggle("hidden", clips.length > 0);
@@ -224,9 +253,7 @@ async function pasteClip(clip: Clip) {
         await invoke("paste_text", { text: clip.text_content || "" });
         break;
       case "Image":
-        if (clip.image_data) {
-          await invoke("paste_image", { imageData: Array.from(clip.image_data) });
-        }
+        await invoke("paste_image", { id: clip.id });
         break;
     }
   } catch (err) {
@@ -242,9 +269,7 @@ async function copyOnly(clip: Clip) {
         await invoke("copy_only_text", { text: clip.text_content || "" });
         break;
       case "Image":
-        if (clip.image_data) {
-          await invoke("copy_only_image", { imageData: Array.from(clip.image_data) });
-        }
+        await invoke("copy_only_image", { id: clip.id });
         break;
     }
     showToast(t("copied"));
@@ -254,13 +279,16 @@ async function copyOnly(clip: Clip) {
 }
 
 async function deleteClip(clip: Clip) {
-  try {
-    await invoke("delete_clip", { id: clip.id });
+  const removeLocal = () => {
     clips = clips.filter(c => c.id !== clip.id);
     if (selectedIndex >= clips.length) {
       selectedIndex = clips.length - 1;
     }
     render();
+  };
+  try {
+    await invoke("delete_clip", { id: clip.id });
+    removeLocal();
 
     // Show undo toast
     showToast(t("deleted"), async () => {
@@ -269,7 +297,13 @@ async function deleteClip(clip: Clip) {
       render();
     });
   } catch (err) {
-    console.error("Delete failed:", err);
+    // Already gone in the backend (e.g. evicted) — sync the local list
+    // instead of leaving a ghost entry.
+    if (String(err).includes("Clip not found")) {
+      removeLocal();
+    } else {
+      console.error("Delete failed:", err);
+    }
   }
 }
 
@@ -277,6 +311,7 @@ async function togglePin(clip: Clip) {
   try {
     await invoke("set_pinned", { id: clip.id, pinned: !clip.pinned });
     clip.pinned = !clip.pinned;
+    sortClips();
     render();
   } catch (err) {
     showToast(String(err));
@@ -335,42 +370,59 @@ function formatTime(ts: number): string {
 }
 
 // === Keyboard Navigation ===
-searchInput.addEventListener("keydown", (e) => {
+function moveSelection(delta: number) {
+  selectedIndex = Math.min(Math.max(selectedIndex + delta, 0), visibleClips.length - 1);
+  render();
+}
+
+function pasteSelected() {
+  if (selectedIndex >= 0 && selectedIndex < visibleClips.length) {
+    pasteClip(visibleClips[selectedIndex]);
+  }
+}
+
+// Bound on document so vim navigation keeps working after the search box is
+// blurred. j/k only navigate when the search box is NOT focused — otherwise
+// vim mode would make the letters j/k untypeable in search.
+document.addEventListener("keydown", (e) => {
+  const inSearch = document.activeElement === searchInput;
+
   switch (e.key) {
     case "ArrowDown":
       e.preventDefault();
-      selectedIndex = Math.min(selectedIndex + 1, clips.length - 1);
-      render();
-      break;
+      moveSelection(1);
+      return;
     case "ArrowUp":
       e.preventDefault();
-      selectedIndex = Math.max(selectedIndex - 1, 0);
-      render();
-      break;
+      moveSelection(-1);
+      return;
     case "Enter":
       e.preventDefault();
-      if (selectedIndex >= 0 && selectedIndex < clips.length) {
-        pasteClip(clips[selectedIndex]);
-      }
-      break;
+      pasteSelected();
+      return;
     case "Escape":
       e.preventDefault();
-      closePanel();
-      break;
-    case "j":
-      if (vimMode) {
-        e.preventDefault();
-        selectedIndex = Math.min(selectedIndex + 1, clips.length - 1);
-        render();
+      // Vim mode: first Escape blurs the search box into navigation mode,
+      // the next Escape closes the Panel.
+      if (inSearch && vimMode) {
+        searchInput.blur();
+      } else {
+        closePanel();
       }
-      break;
-    case "k":
-      if (vimMode) {
-        e.preventDefault();
-        selectedIndex = Math.max(selectedIndex - 1, 0);
-        render();
-      }
-      break;
+      return;
+  }
+
+  if (!inSearch) {
+    if (vimMode && (e.key === "j" || e.key === "k")) {
+      e.preventDefault();
+      moveSelection(e.key === "j" ? 1 : -1);
+      return;
+    }
+    // Any printable character refocuses the search box; focusing during
+    // keydown lets Chromium deliver the char into the input.
+    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      searchInput.focus();
+    }
   }
 });
 

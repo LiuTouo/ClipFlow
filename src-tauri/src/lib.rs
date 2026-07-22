@@ -5,7 +5,7 @@ mod persistence;
 mod startup;
 
 use history::HistoryStore;
-use models::{AppConfig, Clip};
+use models::{AppConfig, Clip, ClipboardUpdate};
 use persistence::Persistence;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
@@ -171,6 +171,18 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
 
     // 1. Hotkey swap (validated + registered before anything is persisted).
     if new_config.hotkey != old_hotkey {
+        // A bare key (e.g. "A" or "F1") as a global shortcut makes that key
+        // unusable in every other application — require a modifier.
+        let has_modifier = ["Ctrl", "Shift", "Alt", "Super"]
+            .iter()
+            .any(|m| new_config.hotkey.contains(m));
+        if !has_modifier {
+            return Err(format!(
+                "Hotkey '{}' must include at least one modifier (Ctrl/Shift/Alt)",
+                new_config.hotkey
+            ));
+        }
+
         let new_shortcut = new_config
             .hotkey
             .parse::<tauri_plugin_global_shortcut::Shortcut>()
@@ -247,26 +259,6 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
     Ok(())
 }
 
-#[tauri::command]
-fn pause_monitoring(state: tauri::State<AppState>) -> Result<(), String> {
-    let mut running = state.monitor_running.lock().unwrap();
-    *running = false;
-    Ok(())
-}
-
-#[tauri::command]
-fn resume_monitoring(state: tauri::State<AppState>) -> Result<(), String> {
-    let mut running = state.monitor_running.lock().unwrap();
-    *running = true;
-    Ok(())
-}
-
-#[tauri::command]
-fn is_monitoring(state: tauri::State<AppState>) -> bool {
-    let running = state.monitor_running.lock().unwrap();
-    *running
-}
-
 /// Write content to the clipboard, hide the Panel so focus returns to the
 /// previous window, wait for focus to settle, then simulate Ctrl+V.
 async fn hide_and_paste(app: &tauri::AppHandle) {
@@ -282,16 +274,23 @@ async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-async fn paste_image(app: tauri::AppHandle, image_data: Vec<u8>) -> Result<(), String> {
-    clipboard::write_image_to_clipboard(&image_data)?;
-    hide_and_paste(&app).await;
-    Ok(())
+/// Fetch an Image Clip's raw DIB bytes from the History by id. Raw images
+/// never cross IPC (see models::Clip::image_data), so paste/copy ask the
+/// backend for the bytes at use time.
+fn image_data_by_id(state: &AppState, id: &str) -> Result<Vec<u8>, String> {
+    let history = state.history.lock().unwrap();
+    history
+        .clips
+        .iter()
+        .find(|c| c.id == id)
+        .and_then(|c| c.image_data.clone())
+        .ok_or_else(|| "Clip not found".to_string())
 }
 
 #[tauri::command]
-async fn paste_file_paths(app: tauri::AppHandle, paths: String) -> Result<(), String> {
-    clipboard::write_file_paths_to_clipboard(&paths)?;
+async fn paste_image(app: tauri::AppHandle, id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let image_data = image_data_by_id(&state, &id)?;
+    clipboard::write_image_to_clipboard(&image_data)?;
     hide_and_paste(&app).await;
     Ok(())
 }
@@ -302,7 +301,8 @@ fn copy_only_text(text: String, _state: tauri::State<AppState>) -> Result<(), St
 }
 
 #[tauri::command]
-fn copy_only_image(image_data: Vec<u8>, _state: tauri::State<AppState>) -> Result<(), String> {
+fn copy_only_image(id: String, state: tauri::State<AppState>) -> Result<(), String> {
+    let image_data = image_data_by_id(&state, &id)?;
     clipboard::write_image_to_clipboard(&image_data)
 }
 
@@ -312,6 +312,12 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
 
         let mut last_seq: u32 = 0;
         let mut last_hash: Option<(String, u64)> = None;
+        // Own exe name, so content ClipFlow itself wrote (paste / copy-only
+        // while the Panel had focus) keeps its original source attribution.
+        let self_exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_default();
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -331,7 +337,6 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
             if current_seq == last_seq {
                 continue;
             }
-            last_seq = current_seq;
 
             let config = config.lock().unwrap().clone();
 
@@ -340,14 +345,21 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                 .unwrap()
                 .as_millis() as u64;
 
+            // Debounce: too soon after the last capture. Do NOT consume the
+            // sequence number — the next poll retries and picks up the latest
+            // content once the window has passed.
             if let Some((ref _hash, ts)) = last_hash {
                 if now - ts < config.debounce_ms {
                     continue;
                 }
             }
 
+            // The sequence number is only consumed on success or definitive
+            // failure (Skip). A Locked clipboard stays pending for next poll,
+            // so copies made while another app holds the clipboard are not lost.
             match clipboard::capture_clipboard(&config) {
-                Ok(clip) => {
+                Ok(mut clip) => {
+                    last_seq = current_seq;
                     let content_hash = clip.content_hash.clone();
 
                     if let Some((ref hash, _)) = last_hash {
@@ -355,7 +367,14 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                             continue;
                         }
                     }
-                    last_hash = Some((content_hash, now));
+                    last_hash = Some((content_hash.clone(), now));
+
+                    if !self_exe.is_empty() && clip.source_exe.eq_ignore_ascii_case(&self_exe) {
+                        if let Some(existing) = history.lock().unwrap().find_by_hash(&content_hash) {
+                            clip.source_exe = existing.source_exe;
+                            clip.source_title = existing.source_title;
+                        }
+                    }
 
                     let (clip, evicted) = {
                         let mut history = history.lock().unwrap();
@@ -370,9 +389,14 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                             }
                         }
                     }
-                    let _ = app_handle.emit("clipboard-update", &clip);
+                    let _ = app_handle.emit("clipboard-update", ClipboardUpdate { clip, evicted });
                 }
-                Err(_) => {}
+                Err(clipboard::CaptureError::Locked) => continue,
+                Err(clipboard::CaptureError::Skip(reason)) => {
+                    log(&format!("[ClipFlow] capture skipped: {}", reason));
+                    last_seq = current_seq;
+                    continue;
+                }
             }
         }
     });
@@ -550,14 +574,20 @@ pub fn run(_hidden: bool) {
                 let _ = open_settings_window(&handle);
             }
 
-            let handle_debug = handle.clone();
-            if let Ok(debug_sc) = "Ctrl+Shift+I".parse::<tauri_plugin_global_shortcut::Shortcut>() {
-                use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let _ = app.global_shortcut().on_shortcut(debug_sc, move |_app, _sc, event| {
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        show_panel(&handle_debug);
-                    }
-                });
+            // Debug-only shortcut to force-show the Panel. Never registered
+            // in release builds: a global Ctrl+Shift+I would steal the
+            // devtools key from browsers and IDEs system-wide.
+            #[cfg(debug_assertions)]
+            {
+                let handle_debug = handle.clone();
+                if let Ok(debug_sc) = "Ctrl+Shift+I".parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                    let _ = app.global_shortcut().on_shortcut(debug_sc, move |_app, _sc, event| {
+                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            show_panel(&handle_debug);
+                        }
+                    });
+                }
             }
 
             log("[ClipFlow] hotkey registered, starting tray setup");
@@ -638,12 +668,8 @@ pub fn run(_hidden: bool) {
             set_pinned,
             get_config,
             update_config,
-            pause_monitoring,
-            resume_monitoring,
-            is_monitoring,
             paste_text,
             paste_image,
-            paste_file_paths,
             copy_only_text,
             copy_only_image,
         ])
