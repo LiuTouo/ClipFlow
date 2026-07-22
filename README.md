@@ -25,6 +25,8 @@ See `CONTEXT.md` for the domain glossary and behavior spec.
 - **Keyboard first** — arrows / `Enter` / `Esc`, optional Vim mode (`j`/`k`)
 - **Pin** — up to 10 clips pinned above a divider, never evicted
 - **Paste** — writes to the clipboard, returns focus to the previous app, simulates `Ctrl+V`; copy-only button per clip
+- **File paste** — file entries can paste the actual files (CF_HDROP, like an Explorer copy; source files must still exist), or fall back to pasting path text
+- **Auto-update** — installed builds download and install updates in the background (signature-verified); portable builds check and download from the About page for a manual overwrite
 - **Delete with undo** — 3-second toast
 - **Exclusion list** — clipboard content from password managers (1Password, Bitwarden, KeePass) is never recorded
 - **Pause monitoring** — from the tray menu; paused copies are permanently discarded
@@ -39,6 +41,8 @@ See `CONTEXT.md` for the domain glossary and behavior spec.
 - [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) — preinstalled on Windows 11 and on most up-to-date Windows 10 machines. Only rare stripped/LTSC systems need the small evergreen installer.
 
 ## Quick start (portable)
+
+Download from [Releases](https://github.com/LiuTouo/ClipFlow/releases/latest): the portable exe (`*-portable.exe`) or the NSIS installer (`*-setup.exe`, with background auto-update).
 
 1. Copy `clipflow.exe` into its own folder (config and data live next to the exe).
 2. Run it — no window appears; ClipFlow lives in the system tray.
@@ -82,9 +86,9 @@ npm run tauri dev
 
 ## Release
 
-1. Bump `version` in `src-tauri/Cargo.toml` (the single source of truth — `tauri.conf.json` reads it from there).
-2. Add an entry to `CHANGELOG.md`.
-3. `npm run build:app`, commit & push. The About page picks up the new version automatically.
+1. `npm run bump -- x.y.z` — propagates the single source of truth (`src-tauri/Cargo.toml`) to package.json and package-lock.json, and inserts a CHANGELOG skeleton.
+2. Fill in the `CHANGELOG.md` entry.
+3. Commit, `git tag vx.y.z`, `git push --tags` — GitHub Actions builds the NSIS installer, portable exe, and updater `latest.json`, and uploads them to the Release (requires `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repo secrets).
 
 ## Project structure
 
@@ -100,6 +104,7 @@ src-tauri/
     models.rs        # Clip + AppConfig (portable JSON config)
     persistence.rs   # optional SQLite write-through store
     startup.rs       # shell:startup .lnk via COM IShellLinkW
+    update.rs        # update channel detection, updater commands, background auto-update
 ```
 
 ## Tech stack

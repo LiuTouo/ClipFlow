@@ -1,0 +1,57 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # Fail fast on a mis-versioned tag: the tag must match the single
+      # source of truth in src-tauri/Cargo.toml.
+      - name: Tag matches Cargo.toml version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} != Cargo.toml v$v" }
+
+      # tauri-action runs beforeBuildCommand (npm run build) + tauri build,
+      # creates the GitHub release, uploads the NSIS setup exe, and — with
+      # the signing env vars present and createUpdaterArtifacts on — signs
+      # and uploads the updater artifacts including latest.json.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # The portable build is the same raw exe the NSIS bundle was made from.
+      # Asset name convention: the About-page updater matches /portable/i + .exe.
+      - name: Stage portable exe
+        shell: pwsh
+        run: Copy-Item "src-tauri/target/release/clipflow.exe" "ClipFlow_${{ github.ref_name }}_x64-portable.exe"
+
+      - name: Upload portable asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "ClipFlow_${{ github.ref_name }}_x64-portable.exe" --clobber

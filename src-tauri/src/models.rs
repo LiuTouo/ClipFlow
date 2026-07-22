@@ -82,6 +82,13 @@ pub struct AppConfig {
     pub theme: String,
     /// UI language: "zh-TW" (default) or "en"
     pub language: String,
+    /// When true, pasting a FilePaths entry writes a real CF_HDROP (the
+    /// target app receives the actual files, which must still exist at their
+    /// original paths). When false, the path text is pasted instead.
+    pub paste_files_as_files: bool,
+    /// When true, check for updates automatically (installed builds update
+    /// in the background; portable builds check when the About page opens).
+    pub auto_update: bool,
 }
 
 impl Default for AppConfig {
@@ -106,6 +113,8 @@ impl Default for AppConfig {
             debounce_ms: 200,
             theme: "system".to_string(),
             language: "zh-TW".to_string(),
+            paste_files_as_files: true,
+            auto_update: true,
         }
     }
 }

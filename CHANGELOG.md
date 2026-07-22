@@ -4,6 +4,23 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.4.0] - 2026-07-22
+
+### Added
+
+- 貼上檔案歷史時複製實際檔案（CF_HDROP，等同在檔案總管複製；貼上時來源檔案必須仍存在），可於設定關閉改貼路徑文字
+- 安裝版（NSIS）背景自動更新：啟動時檢查、下載、驗證簽章、安裝，確認後重新啟動
+- 免安裝版於「關於」頁檢查更新並自動下載新執行檔，使用者關閉程式後手動覆蓋
+- 「關於」頁新增更新區塊（檢查／安裝／重新啟動／開啟資料夾），開啟時隨「自動檢查更新」設定自動檢查
+- 設定新增「貼上檔案歷史時複製實際檔案」與「自動檢查更新」開關
+- 系統匣提示顯示版本號（編譯期取自 Cargo.toml）
+- GitHub Actions 發行流程：推送 v* tag 自動建置 NSIS 安裝檔、updater latest.json 與免安裝執行檔並上傳 Release
+- `scripts/bump-version.ps1`（`npm run bump -- x.y.z`）：同步 Cargo.toml、package.json、package-lock.json 並插入更新日誌骨架
+
+### Fixed
+
+- package-lock.json 版本與 package.json 脫節（停留在 0.1.0）
+
 ## [0.2.1] - 2026-07-22
 
 ### Fixed
@@ -71,6 +88,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.4.0]: https://github.com/LiuTouo/ClipFlow/compare/v0.2.1...v0.4.0
 [0.2.1]: https://github.com/LiuTouo/ClipFlow/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LiuTouo/ClipFlow/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/LiuTouo/ClipFlow/releases/tag/v0.1.0

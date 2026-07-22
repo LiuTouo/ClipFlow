@@ -33,6 +33,7 @@ let clips: Clip[] = [];
 let visibleClips: Clip[] = [];
 let selectedIndex = -1;
 let vimMode = false;
+let pasteFilesAsFiles = true;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
@@ -46,9 +47,10 @@ const toast = document.getElementById("toast")!;
 /** Pull the live config into the page: language, vim mode, theme. */
 async function refreshConfig() {
   try {
-    const config = await invoke<{ language?: string; vim_mode?: boolean; theme?: string }>("get_config");
+    const config = await invoke<{ language?: string; vim_mode?: boolean; theme?: string; paste_files_as_files?: boolean }>("get_config");
     setLanguage(config.language || "zh-TW");
     vimMode = !!config.vim_mode;
+    pasteFilesAsFiles = config.paste_files_as_files !== false;
     applyTheme(config.theme || "system");
   } catch (_) {
     setLanguage("zh-TW");
@@ -262,8 +264,15 @@ async function pasteClip(clip: Clip) {
   try {
     switch (clip.kind) {
       case "Text":
-      case "FilePaths":
         await invoke("paste_text", { text: clip.text_content || "" });
+        break;
+      case "FilePaths":
+        if (pasteFilesAsFiles) {
+          // Panel hides during paste — a fallback toast would be invisible.
+          await invoke<string>("paste_files", { text: clip.text_content || "" });
+        } else {
+          await invoke("paste_text", { text: clip.text_content || "" });
+        }
         break;
       case "Image":
         await invoke("paste_image", { id: clip.id });
@@ -276,16 +285,24 @@ async function pasteClip(clip: Clip) {
 
 async function copyOnly(clip: Clip) {
   try {
+    let toastKey = "copied";
     switch (clip.kind) {
       case "Text":
-      case "FilePaths":
         await invoke("copy_only_text", { text: clip.text_content || "" });
+        break;
+      case "FilePaths":
+        if (pasteFilesAsFiles) {
+          const outcome = await invoke<string>("copy_only_files", { text: clip.text_content || "" });
+          if (outcome === "text") toastKey = "filesMissingFallback";
+        } else {
+          await invoke("copy_only_text", { text: clip.text_content || "" });
+        }
         break;
       case "Image":
         await invoke("copy_only_image", { id: clip.id });
         break;
     }
-    showToast(t("copied"));
+    showToast(t(toastKey));
   } catch (err) {
     console.error("Copy failed:", err);
   }

@@ -650,6 +650,107 @@ pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
     }
 }
 
+/// Write one or more absolute paths as a real CF_HDROP (Explorer-style file
+/// copy), plus a CF_UNICODETEXT companion so non-file targets (Notepad etc.)
+/// still receive something pasteable. Both formats are set in one clipboard
+/// session; on success the system owns both handles.
+pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::{BOOL, POINT};
+    use windows::Win32::UI::Shell::DROPFILES;
+
+    if paths.is_empty() {
+        return Err("No paths".to_string());
+    }
+
+    unsafe {
+        // DROPFILES header followed by a double-NUL-terminated UTF-16 list.
+        let mut wide: Vec<u16> = Vec::new();
+        for p in paths {
+            wide.extend(OsStr::new(p).encode_wide());
+            wide.push(0);
+        }
+        wide.push(0); // list terminator
+
+        let header_size = std::mem::size_of::<DROPFILES>();
+        let total = header_size + wide.len() * 2;
+        let hdrop = global_alloc(0x0002, total);
+        if hdrop == 0 { return Err("Alloc failed".to_string()); }
+
+        let header = DROPFILES {
+            pFiles: header_size as u32,
+            pt: POINT { x: 0, y: 0 },
+            fNC: BOOL(0),
+            fWide: BOOL(1),
+        };
+        let ptr = GlobalLock(hdrop);
+        std::ptr::write(ptr as *mut DROPFILES, header);
+        std::ptr::copy_nonoverlapping(
+            wide.as_ptr(),
+            (ptr as *mut u8).add(header_size) as *mut u16,
+            wide.len(),
+        );
+        GlobalUnlock(hdrop);
+
+        // Companion text: paths joined with \r\n (Windows text convention).
+        let text = paths.join("\r\n");
+        let wide_text: Vec<u16> = OsStr::new(&text).encode_wide().chain(std::iter::once(0)).collect();
+        let htext = global_alloc(0x0002, wide_text.len() * 2);
+        if htext == 0 {
+            global_free(hdrop);
+            return Err("Alloc failed".to_string());
+        }
+        let tptr = GlobalLock(htext);
+        std::ptr::copy_nonoverlapping(wide_text.as_ptr(), tptr as *mut u16, wide_text.len());
+        GlobalUnlock(htext);
+
+        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
+            global_free(hdrop);
+            global_free(htext);
+            return Err("Cannot open".to_string());
+        }
+        let _ = EmptyClipboard();
+        if SetClipboardData(CF_HDROP, HANDLE(hdrop as *mut std::ffi::c_void)).is_err() {
+            // SetClipboardData failed: ownership never transferred, free both.
+            global_free(hdrop);
+            global_free(htext);
+            let _ = CloseClipboard();
+            return Err("SetClipboardData failed".to_string());
+        }
+        // hdrop is now system-owned; only htext can still fail.
+        if SetClipboardData(CF_UNICODETEXT, HANDLE(htext as *mut std::ffi::c_void)).is_err() {
+            global_free(htext);
+            let _ = CloseClipboard();
+            return Err("SetClipboardData failed".to_string());
+        }
+        let _ = CloseClipboard();
+        Ok(())
+    }
+}
+
+/// Split a stored ';'-joined FilePaths payload, drop paths that no longer
+/// exist, and write the survivors as CF_HDROP. When EVERY path is gone,
+/// fall back to writing the original text so paste still does something.
+/// Returns "files" or "text" so the caller can surface the fallback.
+pub fn write_files_to_clipboard_from_text(text: &str) -> Result<String, String> {
+    // No trim: paths were ';'-joined at capture time with no added
+    // whitespace, and real filenames may contain spaces.
+    let paths: Vec<String> = text
+        .split(';')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .filter(|p| std::path::Path::new(p).exists())
+        .collect();
+
+    if paths.is_empty() {
+        write_text_to_clipboard(text)?;
+        return Ok("text".to_string());
+    }
+    write_files_to_clipboard(&paths)?;
+    Ok("files".to_string())
+}
+
 pub fn simulate_ctrl_v() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         keybd_event, KEYBD_EVENT_FLAGS, VK_CONTROL,

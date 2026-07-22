@@ -11,7 +11,7 @@
   <sub>輕量 · 即速 · 專注</sub>
 </p>
 
-現代輕量 Windows 剪貼簿歷史工具。Tauri v2 + Vanilla TS/CSS，Raycast 風格浮動面板。完全免安裝——不寫登錄檔、不需要安裝程式。
+現代輕量 Windows 剪貼簿歷史工具。Tauri v2 + Vanilla TS/CSS，Raycast 風格浮動面板。提供免安裝可攜版（不寫登錄檔）與 NSIS 安裝版（背景自動更新）。
 
 一個專為現代 AI VibeCoding 最常用到的動作「複製」而生的工具。
 
@@ -25,6 +25,8 @@
 - **鍵盤優先** — 方向鍵 / `Enter` / `Esc`，可選 Vim 模式（`j`/`k`）
 - **釘選** — 最多 10 則置頂於分隔線上方，永不淘汰
 - **貼上** — 寫入剪貼簿後把焦點還給原應用程式並模擬 `Ctrl+V`；每則另有純複製按鈕
+- **檔案貼上** — 檔案歷史可貼上實際檔案（CF_HDROP，等同檔案總管複製；來源檔案須仍存在），可改為貼路徑文字
+- **自動更新** — 安裝版背景下載並安裝更新（簽章驗證）；免安裝版於「關於」頁檢查並下載後手動覆蓋
 - **刪除可復原** — 3 秒吐司提示
 - **排除清單** — 密碼管理工具（1Password、Bitwarden、KeePass）的剪貼內容永不記錄
 - **暫停監聽** — 從系統匣選單切換；暫停期間的複製永久捨棄
@@ -39,6 +41,8 @@
 - [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) — Windows 11 內建，大多數 Windows 10 也已具備。僅少數精簡版 / LTSC 系統需要另行安裝（小型 evergreen 安裝包）。
 
 ## 快速開始（免安裝）
+
+從 [Releases](https://github.com/LiuTouo/ClipFlow/releases/latest) 下載免安裝執行檔（`*-portable.exe`）或 NSIS 安裝檔（`*-setup.exe`，支援背景自動更新）。
 
 1. 把 `clipflow.exe` 放進專屬資料夾（設定與資料會產生在 exe 旁邊）。
 2. 執行——不會出現視窗，ClipFlow 常駐在系統匣。
@@ -82,9 +86,9 @@ npm run tauri dev
 
 ## 發版流程
 
-1. 修改 `src-tauri/Cargo.toml` 的 `version`（版本單一來源，`tauri.conf.json` 會自動讀取）。
-2. 在 `CHANGELOG.md` 新增該版本的條目。
-3. `npm run build:app`，commit 並 push。關於頁會自動顯示新版本號。
+1. `npm run bump -- x.y.z` — 以 `src-tauri/Cargo.toml` 為單一來源，同步 package.json、package-lock.json 並插入 CHANGELOG 骨架。
+2. 填寫 `CHANGELOG.md` 該版本條目。
+3. Commit、`git tag vx.y.z`、`git push --tags` — GitHub Actions 自動建置 NSIS 安裝檔、免安裝執行檔與 updater `latest.json` 並上傳 Release（需在 repo secrets 設定 `TAURI_SIGNING_PRIVATE_KEY` 與 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）。
 
 ## 專案結構
 
@@ -100,6 +104,7 @@ src-tauri/
     models.rs        # Clip + AppConfig（可攜 JSON 設定）
     persistence.rs   # 可選 SQLite 寫穿儲存
     startup.rs       # shell:startup .lnk（COM IShellLinkW）
+    update.rs        # 更新管道判斷、updater 命令、背景自動更新
 ```
 
 ## 技術棧

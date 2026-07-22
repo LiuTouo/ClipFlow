@@ -1,6 +1,6 @@
 [package]
 name = "clipflow"
-version = "0.2.1"
+version = "0.4.0"
 description = "Modern lightweight clipboard history tool"
 authors = ["LiuT"]
 edition = "2021"
@@ -23,6 +23,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

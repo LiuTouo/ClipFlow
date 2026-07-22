@@ -545,7 +545,8 @@ html, body {
   border-color: var(--accent);
 }
 
-#settings-panel .hint {
+#settings-panel .hint,
+#about-panel .hint {
   font-size: var(--font-size-small);
   color: var(--text-tertiary);
   display: block;
@@ -623,6 +624,44 @@ html, body {
 
 .about-links a:hover {
   text-decoration: underline;
+}
+
+#about-panel hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+#update-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+#update-section #update-status {
+  min-height: 1.2em;
+  margin-bottom: 0;
+}
+
+#update-section button {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+#update-section button:hover {
+  background: var(--accent-hover);
+}
+
+#update-section .hidden {
+  display: none;
 }
 
 /* === Hotkey Recording === */

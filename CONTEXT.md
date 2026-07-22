@@ -97,6 +97,8 @@ The action of selecting a Clip and inserting it into the previously focused appl
 
 If phase 2 fails (target window vanished, etc.), the content remains on the clipboard for manual `Ctrl+V`.
 
+For FilePaths Clips, phase 1 depends on the `paste_files_as_files` setting (default on): on writes a real CF_HDROP plus a CF_UNICODETEXT companion (non-file targets still get path text); off writes the `;`-joined path text. See `docs/adr/0001-cfhdrop-file-paste.md`.
+
 ### Tray
 The system tray icon that indicates ClipFlow is running. Right-click opens a native context menu: Settings, About, Pause Monitoring, Quit.
 
@@ -105,6 +107,8 @@ All user-facing UI (Panel, Settings, About, tray menu) is localized via the `lan
 
 ### Portable
 ClipFlow runs without installation or registry writes. All configuration and data live alongside the executable. Startup is achieved via a `.lnk` shortcut in `shell:startup` with `--hidden` flag — no registry Run key.
+
+One exe also ships inside the NSIS installer (per-user, `%LOCALAPPDATA%\Programs` — user-writable, so config-next-to-exe still holds). The channel is detected at runtime from the exe path; installed builds auto-update via tauri-plugin-updater, portable builds download the new exe from GitHub Releases for manual overwrite. See `docs/adr/0002-update-strategy.md`.
 
 ---
 

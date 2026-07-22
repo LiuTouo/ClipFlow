@@ -3,6 +3,7 @@ mod history;
 mod models;
 mod persistence;
 mod startup;
+mod update;
 
 use history::HistoryStore;
 use models::{AppConfig, Clip, ClipboardUpdate};
@@ -168,9 +169,9 @@ fn rollback_persist(state: &AppState, failed_new_value: bool) {
 #[tauri::command]
 fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
     let new_config = new_config.sanitized();
-    let (old_hotkey, old_startup, old_persist, old_language) = {
+    let (old_hotkey, old_startup, old_persist, old_language, old_auto_update) = {
         let config = state.config.lock().unwrap();
-        (config.hotkey.clone(), config.startup, config.persist, config.language.clone())
+        (config.hotkey.clone(), config.startup, config.persist, config.language.clone(), config.auto_update)
     };
     let mut swapped_hotkey = false;
     let mut swapped_startup = false;
@@ -261,8 +262,17 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
         }
     }
 
+    // Toggling auto_update on takes effect without an app restart: run one
+    // check now (installed builds only — spawn_auto_update_check re-verifies).
+    let auto_update_turned_on = !old_auto_update && new_config.auto_update;
+
     let mut config = state.config.lock().unwrap();
     *config = new_config;
+    drop(config);
+
+    if auto_update_turned_on {
+        update::spawn_auto_update_check(app.clone(), state.config.clone());
+    }
     Ok(())
 }
 
@@ -311,6 +321,20 @@ fn copy_only_text(text: String, _state: tauri::State<AppState>) -> Result<(), St
 fn copy_only_image(id: String, state: tauri::State<AppState>) -> Result<(), String> {
     let image_data = image_data_by_id(&state, &id)?;
     clipboard::write_image_to_clipboard(&image_data)
+}
+
+/// Paste a FilePaths entry as real files (CF_HDROP). Returns "files" or
+/// "text" (all source files gone → path-text fallback).
+#[tauri::command]
+async fn paste_files(app: tauri::AppHandle, text: String) -> Result<String, String> {
+    let outcome = clipboard::write_files_to_clipboard_from_text(&text)?;
+    hide_and_paste(&app).await;
+    Ok(outcome)
+}
+
+#[tauri::command]
+fn copy_only_files(text: String) -> Result<String, String> {
+    clipboard::write_files_to_clipboard_from_text(&text)
 }
 
 fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>, persistence: Arc<Mutex<Option<Persistence>>>) {
@@ -561,6 +585,8 @@ pub fn run(_hidden: bool) {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             history: history.clone(),
             config: config_store.clone(),
@@ -608,6 +634,10 @@ pub fn run(_hidden: bool) {
             // Start clipboard monitor
             start_monitor(handle.clone(), history.clone(), config_store.clone(), monitor_running.clone(), persistence.clone());
 
+            // Background auto-update check (installed builds only, and only
+            // when auto_update is on — portable builds never touch the updater).
+            update::spawn_auto_update_check(handle.clone(), config_store.clone());
+
             // Build tray (programmatic only — no trayIcon in config)
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
             use tauri::tray::TrayIconBuilder;
@@ -633,7 +663,7 @@ pub fn run(_hidden: bool) {
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
-                .tooltip("ClipFlow")
+                .tooltip(&format!("ClipFlow v{}", env!("CARGO_PKG_VERSION")))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| {
@@ -686,6 +716,12 @@ pub fn run(_hidden: bool) {
             paste_image,
             copy_only_text,
             copy_only_image,
+            paste_files,
+            copy_only_files,
+            update::update_channel,
+            update::check_for_updates,
+            update::install_update,
+            update::restart_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -715,7 +751,7 @@ fn open_settings_window(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
     log("[ClipFlow] creating settings window");
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("ClipFlow Settings")
-        .inner_size(500.0, 600.0)
+        .inner_size(500.0, 700.0)
         .resizable(false)
         .visible(true)
         .center()
@@ -736,7 +772,7 @@ fn open_about_dialog(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
 
     let _ = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("about.html".into()))
         .title("About ClipFlow")
-        .inner_size(360.0, 320.0)
+        .inner_size(360.0, 420.0)
         .resizable(false)
         .center()
         .build()?;

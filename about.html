@@ -9,12 +9,20 @@
   <body class="about-body">
     <div id="about-panel">
       <h1>ClipFlow</h1>
-      <p class="version" id="about-version">v0.2.0</p>
+      <p class="version" id="about-version">v—</p>
       <p data-i18n="tagline">現代、輕量的 Windows 剪貼簿歷史工具。</p>
       <div class="about-links">
         <a href="https://github.com/LiuTouo/ClipFlow" id="link-github">GitHub</a>
         <span> · </span>
         <a href="https://github.com/LiuTouo/ClipFlow/blob/main/CHANGELOG.md" id="link-changelog" data-i18n="changelog">更新日誌</a>
+      </div>
+      <hr />
+      <div id="update-section">
+        <p id="update-status" class="hint"></p>
+        <button id="btn-check-update" data-i18n="checkUpdate">檢查更新</button>
+        <button id="btn-install-update" class="hidden" data-i18n="installNow">立即更新</button>
+        <button id="btn-restart" class="hidden" data-i18n="restartNow">立即重新啟動</button>
+        <button id="btn-open-folder" class="hidden" data-i18n="openFolder">開啟資料夾</button>
       </div>
     </div>
     <script type="module" src="/src/about.ts" defer></script>

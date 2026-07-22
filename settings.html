@@ -54,6 +54,16 @@
           <input type="checkbox" id="setting-vim-mode" />
           <span data-i18n="vimMode">Vim 模式（以 j/k 瀏覽）</span>
         </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="setting-paste-files-as-files" />
+          <span data-i18n="pasteFilesAsFiles">貼上檔案歷史時複製實際檔案</span>
+        </label>
+        <p class="hint" data-i18n="pasteFilesAsFilesHint">開啟時，貼上檔案歷史等同在檔案總管複製該檔案（貼上時來源檔案必須仍存在）；關閉時改貼上路徑文字。</p>
+        <label class="checkbox-label">
+          <input type="checkbox" id="setting-auto-update" />
+          <span data-i18n="autoUpdate">自動檢查更新</span>
+        </label>
+        <p class="hint" data-i18n="autoUpdateHint">安裝版會在背景自動下載並安裝更新；免安裝版請到「關於」頁手動檢查。</p>
         <label>
           <span data-i18n="debounce">防抖動 (ms)</span>
           <input type="number" id="setting-debounce" min="50" max="2000" step="50" />
