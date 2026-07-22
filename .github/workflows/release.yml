@@ -35,10 +35,15 @@ jobs:
           if ("v$v" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} != Cargo.toml v$v" }
 
       # tauri-action runs beforeBuildCommand (npm run build) + tauri build,
-      # creates the GitHub release, uploads the NSIS setup exe, and — with
-      # the signing env vars present and createUpdaterArtifacts on — signs
-      # and uploads the updater artifacts including latest.json.
+      # creates the GitHub release (tagName + releaseName are REQUIRED —
+      # without them it only builds and uploads nothing), uploads the NSIS
+      # setup exe, and — with the signing env vars present and
+      # createUpdaterArtifacts on — also signs and uploads the updater
+      # artifacts including latest.json.
       - uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "ClipFlow v__VERSION__"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
