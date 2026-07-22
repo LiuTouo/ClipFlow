@@ -106,9 +106,9 @@ The system tray icon that indicates ClipFlow is running. Right-click opens a nat
 All user-facing UI (Panel, Settings, About, tray menu) is localized via the `language` config option: `zh-TW` (Traditional Chinese, default) or `en`. Frontend pages share one dictionary (`src/i18n.ts`); the Panel re-applies the language whenever it regains focus, and the tray menu labels update immediately when the setting changes.
 
 ### Portable
-ClipFlow runs without installation or registry writes. All configuration and data live alongside the executable. Startup is achieved via a `.lnk` shortcut in `shell:startup` with `--hidden` flag — no registry Run key.
+ClipFlow runs without installation or registry writes. Startup is achieved via a `.lnk` shortcut in `shell:startup` with `--hidden` flag — no registry Run key.
 
-One exe also ships inside the NSIS installer (per-user, `%LOCALAPPDATA%\Programs` — user-writable, so config-next-to-exe still holds). The channel is detected at runtime from the exe path; installed builds auto-update via tauri-plugin-updater, portable builds download the new exe from GitHub Releases for manual overwrite. See `docs/adr/0002-update-strategy.md`.
+One exe also ships inside the NSIS installer. Config and data live next to the exe for portable builds; installed builds use `%APPDATA%\ClipFlow` because the install dir (e.g. Program Files) is not user-writable. The channel is detected at runtime via the NSIS uninstall registry key; installed builds auto-update via tauri-plugin-updater, portable builds download the new exe from GitHub Releases for manual overwrite. See `docs/adr/0002-update-strategy.md`.
 
 ---
 

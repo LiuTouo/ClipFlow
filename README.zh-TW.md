@@ -44,7 +44,7 @@
 
 從 [Releases](https://github.com/LiuTouo/ClipFlow/releases/latest) 下載免安裝執行檔（`*-portable.exe`）或 NSIS 安裝檔（`*-setup.exe`，支援背景自動更新）。
 
-1. 把 `clipflow.exe` 放進專屬資料夾（設定與資料會產生在 exe 旁邊）。
+1. 把 `clipflow.exe` 放進專屬資料夾（設定與資料會產生在 exe 旁邊；NSIS 安裝版則存 `%APPDATA%\ClipFlow`）。
 2. 執行——不會出現視窗，ClipFlow 常駐在系統匣。
 3. 按 `Ctrl+Shift+V` 開啟歷史面板。
 

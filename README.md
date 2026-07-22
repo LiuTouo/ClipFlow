@@ -44,7 +44,7 @@ See `CONTEXT.md` for the domain glossary and behavior spec.
 
 Download from [Releases](https://github.com/LiuTouo/ClipFlow/releases/latest): the portable exe (`*-portable.exe`) or the NSIS installer (`*-setup.exe`, with background auto-update).
 
-1. Copy `clipflow.exe` into its own folder (config and data live next to the exe).
+1. Copy `clipflow.exe` into its own folder (config and data live next to the exe; the NSIS-installed build uses `%APPDATA%\ClipFlow` instead).
 2. Run it — no window appears; ClipFlow lives in the system tray.
 3. Press `Ctrl+Shift+V` to open the history panel.
 

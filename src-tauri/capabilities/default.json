@@ -17,10 +17,6 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
     "shell:default",
-    "shell:allow-open",
-    {
-      "identifier": "fs:allow-write-file",
-      "allow": [{ "path": "$RESOURCE/clipflow-update.exe" }]
-    }
+    "shell:allow-open"
   ]
 }

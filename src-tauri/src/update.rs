@@ -1,33 +1,113 @@
 //! Update support. One binary serves both channels:
-//! - installed (NSIS, per-user under %LOCALAPPDATA%\Programs): full auto
-//!   update via tauri-plugin-updater (check → download → verify signature →
-//!   install → confirm restart).
-//! - portable (raw exe anywhere else): the updater must NEVER run here — it
-//!   would run the NSIS installer over a portable exe. Portable updates are
-//!   checked/downloaded from the About page in TS (GitHub API + plugin-fs);
-//!   Rust only tells the frontend which channel this is.
+//! - installed (NSIS): full auto update via tauri-plugin-updater (check →
+//!   download → verify signature → install → confirm restart). The updater
+//!   must NEVER run on portable — it would run the NSIS installer over a
+//!   portable exe.
+//! - portable (raw exe anywhere else): the About page checks GitHub for a
+//!   newer release, then Rust downloads the new exe (the webview's fetch
+//!   dies on CORS when GitHub redirects to the CDN) and the user overwrites
+//!   the old exe manually after quitting.
 //!
-//! Known limitation: a portable exe hand-placed under %LOCALAPPDATA%\Programs
-//! is misdetected as installed.
+//! Channel detection reads the NSIS uninstall registry key — the only
+//! reliable marker, since the install location is user-selectable
+//! (per-user %LOCALAPPDATA%\Programs or per-machine Program Files).
 
 use crate::models::AppConfig;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
-/// Tauri v2 NSIS defaults to a per-user install under %LOCALAPPDATA%\Programs.
+fn to_wide(s: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// InstallLocation from the NSIS uninstall key, if this machine has one.
+/// The value is written quoted ("C:\...\ClipFlow") — quotes are trimmed.
+fn install_location_from_registry() -> Option<PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
+        HKEY_LOCAL_MACHINE, KEY_READ,
+    };
+
+    let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ClipFlow");
+    let value = to_wide("InstallLocation");
+
+    for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        unsafe {
+            let mut hkey = HKEY::default();
+            if RegOpenKeyExW(root, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut hkey).is_err() {
+                continue;
+            }
+            let mut buf = [0u16; 512];
+            let mut len = (buf.len() * 2) as u32;
+            let ok = RegQueryValueExW(
+                hkey,
+                PCWSTR(value.as_ptr()),
+                None,
+                None,
+                Some(buf.as_mut_ptr() as *mut u8),
+                Some(&mut len),
+            );
+            let _ = RegCloseKey(hkey);
+            if ok.is_ok() && len >= 2 {
+                let raw = String::from_utf16_lossy(&buf[..len as usize / 2 - 1]);
+                let trimmed = raw.trim_matches('"').trim_end_matches(['\\', '/']);
+                if !trimmed.is_empty() {
+                    return Some(PathBuf::from(trimmed));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// True when this exe lives in the directory the NSIS installer registered.
+/// Case-insensitive, trailing-separator-insensitive.
 pub fn is_installed_build() -> bool {
     let exe = std::env::current_exe().unwrap_or_default();
-    let programs = std::env::var_os("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_default()
-        .join("Programs");
-    exe.starts_with(programs)
+    let Some(dir) = install_location_from_registry() else {
+        return false;
+    };
+    let norm = |p: &std::path::Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    exe.parent().map(norm) == Some(norm(&dir))
 }
 
 #[tauri::command]
 pub fn update_channel() -> &'static str {
     if is_installed_build() { "installed" } else { "portable" }
+}
+
+/// Download the newer portable exe next to the running one. Rust-side
+/// because GitHub's asset CDN omits CORS headers, so webview fetch fails.
+/// Returns the destination path.
+#[tauri::command]
+pub async fn download_portable_update(url: String) -> Result<String, String> {
+    if is_installed_build() {
+        return Err("Portable download is only for portable builds".to_string());
+    }
+    let dest = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .ok_or_else(|| "No exe dir".to_string())?
+        .join("clipflow-update.exe");
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let resp = ureq::get(&url).call().map_err(|e| e.to_string())?;
+        let mut reader = resp.into_reader();
+        let mut file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+        std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
+        Ok(dest.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]
@@ -112,11 +192,6 @@ fn msg_box_yes_no(title: &str, body: &str) -> bool {
         MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_YESNO,
     };
 
-    let to_wide = |s: &str| -> Vec<u16> {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
-    };
     let title_w = to_wide(title);
     let body_w = to_wide(body);
     unsafe {

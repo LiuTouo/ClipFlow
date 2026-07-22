@@ -165,9 +165,5 @@ fn kind_str(kind: &ClipKind) -> &'static str {
 }
 
 fn db_path() -> std::path::PathBuf {
-    std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("ClipFlow.exe"))
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("clipflow.db")
+    crate::models::data_dir().join("clipflow.db")
 }

@@ -1,13 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-shell";
-import { resourceDir, join } from "@tauri-apps/api/path";
-import { writeFile } from "@tauri-apps/plugin-fs";
+import { resourceDir } from "@tauri-apps/api/path";
 import { initLanguage, applyI18n, t } from "./i18n";
 import { applyTheme } from "./theme";
 
 const REPO = "LiuTouo/ClipFlow";
-const PORTABLE_EXE_NAME = "clipflow-update.exe";
 
 interface UpdateCheck {
   status: string; // "up_to_date" | "available"
@@ -16,7 +14,6 @@ interface UpdateCheck {
 
 interface GhAsset {
   name: string;
-  url: string;
   browser_download_url: string;
 }
 
@@ -106,57 +103,18 @@ async function portableCheck() {
   await portableDownload(asset);
 }
 
+/** The actual download runs in Rust (update::download_portable_update):
+ * GitHub's asset CDN omits CORS headers, so webview fetch always fails. */
 async function portableDownload(asset: GhAsset) {
-  let resp: Response;
+  setStatus(t("downloadingUpdate"));
   try {
-    resp = await fetch(asset.url, { headers: { Accept: "application/octet-stream" } });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  } catch (err) {
-    console.warn("Asset API download failed, trying browser URL:", err);
-    try {
-      resp = await fetch(asset.browser_download_url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    } catch (err2) {
-      console.error("Browser URL download failed:", err2);
-      setStatus(t("downloadManual"));
-      await open(`https://github.com/${REPO}/releases/latest`);
-      return;
-    }
-  }
-
-  try {
-    const total = Number(resp.headers.get("Content-Length")) || 0;
-    let bytes: Uint8Array;
-    if (total > 0 && resp.body) {
-      // Stream so the status line can show a percentage.
-      const reader = resp.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let received = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-        setStatus(t("downloading", { pct: Math.floor((received / total) * 100) }));
-      }
-      bytes = new Uint8Array(received);
-      let offset = 0;
-      for (const c of chunks) {
-        bytes.set(c, offset);
-        offset += c.length;
-      }
-    } else {
-      setStatus(t("installing"));
-      bytes = new Uint8Array(await resp.arrayBuffer());
-    }
-
-    const dir = await resourceDir();
-    const target = await join(dir, PORTABLE_EXE_NAME);
-    await writeFile(target, bytes);
-    setStatus(t("portableUpdateReady", { path: target }));
+    const path = await invoke<string>("download_portable_update", {
+      url: asset.browser_download_url,
+    });
+    setStatus(t("portableUpdateReady", { path }));
     show("btn-open-folder", true);
   } catch (err) {
-    console.error("Download/write failed:", err);
+    console.error("Portable download failed:", err);
     setStatus(t("updateError"));
   }
 }

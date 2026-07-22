@@ -4,6 +4,14 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.4.2] - 2026-07-22
+
+### Fixed
+
+- 安裝版被誤判為免安裝版：管道偵測從 exe 路徑啟發式改為讀取 NSIS 解除安裝登錄檔（`Uninstall\ClipFlow` 的 `InstallLocation`），涵蓋 per-user 與 per-machine 安裝
+- 免安裝版更新永遠失敗並轉開下載頁：GitHub 資產 CDN 不提供 CORS 標頭，webview fetch 無法跟隨重新導向，下載改由 Rust 端執行（ureq），並移除不再需要的 plugin-fs
+- 安裝版設定與歷史無法保存：安裝目錄（如 Program Files）使用者無寫入權，設定檔與 SQLite 改存 `%APPDATA%\ClipFlow`（免安裝版仍在 exe 旁）
+
 ## [0.4.1] - 2026-07-22
 
 ### Changed
@@ -94,6 +102,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.4.2]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/LiuTouo/ClipFlow/compare/v0.2.1...v0.4.0
 [0.2.1]: https://github.com/LiuTouo/ClipFlow/compare/v0.2.0...v0.2.1

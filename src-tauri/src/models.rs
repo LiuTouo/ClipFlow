@@ -156,10 +156,25 @@ impl AppConfig {
     }
 }
 
-fn config_path() -> std::path::PathBuf {
+/// Where config and data files live. Portable builds keep everything next
+/// to the exe; installed builds can't (the install dir may be Program
+/// Files, which is not user-writable) so they use %APPDATA%\ClipFlow.
+pub fn data_dir() -> std::path::PathBuf {
+    if crate::update::is_installed_build() {
+        let dir = std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("ClipFlow");
+        let _ = std::fs::create_dir_all(&dir);
+        return dir;
+    }
     std::env::current_exe()
         .unwrap_or_else(|_| std::path::PathBuf::from("ClipFlow.exe"))
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
-        .join("clipflow.config.json")
+        .to_path_buf()
+}
+
+fn config_path() -> std::path::PathBuf {
+    data_dir().join("clipflow.config.json")
 }

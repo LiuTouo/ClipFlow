@@ -72,11 +72,10 @@ const I18N: Record<string, Record<string, string>> = {
     installNow: "立即更新",
     installing: "正在下載並安裝更新…",
     restartNow: "立即重新啟動",
-    downloading: "正在下載… {pct}%",
+    downloadingUpdate: "正在下載更新…",
     portableAssetMissing: "此版本未提供免安裝檔案",
     portableUpdateReady: "已下載至 {path}。請結束 ClipFlow，再用新檔案取代舊的執行檔。",
     openFolder: "開啟資料夾",
-    downloadManual: "無法自動下載，已開啟下載頁面",
   },
   en: {
     // Settings page
@@ -145,11 +144,10 @@ const I18N: Record<string, Record<string, string>> = {
     installNow: "Install update",
     installing: "Downloading and installing…",
     restartNow: "Restart now",
-    downloading: "Downloading… {pct}%",
+    downloadingUpdate: "Downloading update…",
     portableAssetMissing: "No portable build in this release",
     portableUpdateReady: "Downloaded to {path}. Quit ClipFlow, then replace the old exe with the new file.",
     openFolder: "Open folder",
-    downloadManual: "Automatic download failed — opened the download page",
   },
 };
 

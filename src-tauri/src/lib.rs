@@ -586,7 +586,6 @@ pub fn run(_hidden: bool) {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             history: history.clone(),
             config: config_store.clone(),
@@ -722,6 +721,7 @@ pub fn run(_hidden: bool) {
             update::check_for_updates,
             update::install_update,
             update::restart_app,
+            update::download_portable_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
