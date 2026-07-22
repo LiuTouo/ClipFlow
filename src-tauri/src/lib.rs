@@ -75,12 +75,15 @@ fn get_clips(state: tauri::State<AppState>) -> Vec<Clip> {
 
 #[tauri::command]
 fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> {
-    let mut history = state.history.lock().unwrap();
-    let deleted = history.delete(&id);
+    // Scoped guards: never hold one state lock while acquiring another —
+    // keeps every command on the same lock order as undo_delete.
+    let deleted = {
+        let mut history = state.history.lock().unwrap();
+        history.delete(&id)
+    };
     if let Some(clip) = deleted {
         let clip_id = clip.id.clone();
-        let mut last = state.last_deleted.lock().unwrap();
-        *last = Some(clip);
+        *state.last_deleted.lock().unwrap() = Some(clip);
         persist_with(&state, |p| {
             let _ = p.delete(&clip_id);
         });
@@ -92,8 +95,11 @@ fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> 
 
 #[tauri::command]
 fn undo_delete(state: tauri::State<AppState>) -> Result<Clip, String> {
-    let mut last = state.last_deleted.lock().unwrap();
-    if let Some(clip) = last.take() {
+    let clip = {
+        let mut last = state.last_deleted.lock().unwrap();
+        last.take()
+    };
+    if let Some(clip) = clip {
         let (restored, evicted) = {
             let mut history = state.history.lock().unwrap();
             let config = state.config.lock().unwrap();
@@ -161,6 +167,7 @@ fn rollback_persist(state: &AppState, failed_new_value: bool) {
 
 #[tauri::command]
 fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
+    let new_config = new_config.sanitized();
     let (old_hotkey, old_startup, old_persist, old_language) = {
         let config = state.config.lock().unwrap();
         (config.hotkey.clone(), config.startup, config.persist, config.language.clone())
@@ -402,7 +409,14 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
     });
 }
 
-fn log(_msg: &str) {}
+/// Debug-only log. Release builds compile to a no-op (the app has no
+/// console under windows_subsystem = "windows" anyway).
+fn log(msg: &str) {
+    #[cfg(debug_assertions)]
+    eprintln!("{}", msg);
+    #[cfg(not(debug_assertions))]
+    let _ = msg;
+}
 
 fn show_panel(app: &tauri::AppHandle) {
     use tauri::WebviewUrl;

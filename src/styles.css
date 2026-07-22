@@ -411,8 +411,9 @@ html, body {
   object-fit: cover;
 }
 
-/* === Settings Page === */
-.settings-body {
+/* === Settings / About Pages === */
+.settings-body,
+.about-body {
   background: var(--bg-primary) !important;
   padding: 0;
 }

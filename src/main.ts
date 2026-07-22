@@ -38,6 +38,8 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
 const clipList = document.getElementById("clip-list")!;
 const emptyState = document.getElementById("empty-state")!;
+const emptyTitle = document.getElementById("empty-title")!;
+const emptyHint = document.getElementById("empty-hint")!;
 const toast = document.getElementById("toast")!;
 
 // === Init ===
@@ -90,9 +92,6 @@ async function init() {
     // clip itself), so the panel never shows ghosts.
     if (evicted.length > 0) {
       clips = clips.filter(c => !evicted.includes(c.id));
-      if (selectedIndex >= clips.length) {
-        selectedIndex = clips.length - 1;
-      }
     }
     sortClips();
     render();
@@ -110,8 +109,22 @@ function render() {
   });
   visibleClips = filtered;
 
+  // Selection indexes into visibleClips — keep it in range after any
+  // filter or list change (delete, eviction, new search).
+  if (selectedIndex >= visibleClips.length) {
+    selectedIndex = visibleClips.length - 1;
+  }
+
   clipList.innerHTML = "";
-  emptyState.classList.toggle("hidden", clips.length > 0);
+  const searching = query.length > 0;
+  const showEmpty = visibleClips.length === 0;
+  emptyState.classList.toggle("hidden", !showEmpty);
+  if (showEmpty) {
+    // "No history yet" and "no search matches" are different states —
+    // show the honest one.
+    emptyTitle.textContent = searching ? t("noResults") : t("emptyTitle");
+    emptyHint.classList.toggle("hidden", searching);
+  }
 
   let hasPinned = false;
   let hasUnpinned = false;
@@ -281,10 +294,7 @@ async function copyOnly(clip: Clip) {
 async function deleteClip(clip: Clip) {
   const removeLocal = () => {
     clips = clips.filter(c => c.id !== clip.id);
-    if (selectedIndex >= clips.length) {
-      selectedIndex = clips.length - 1;
-    }
-    render();
+    render(); // render() clamps selectedIndex against visibleClips
   };
   try {
     await invoke("delete_clip", { id: clip.id });

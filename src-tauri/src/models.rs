@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 /// A unique clipboard entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Serialize-only: the frontend receives Clips but never sends them back
+/// (commands take ids or plain text), so no Deserialize derive.
+#[derive(Debug, Clone, Serialize)]
 pub struct Clip {
     pub id: String,
     pub kind: ClipKind,
@@ -34,7 +36,7 @@ pub struct Clip {
     pub byte_size: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ClipKind {
     Text,
     Image,
@@ -130,6 +132,18 @@ impl AppConfig {
     pub fn save(&self) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(config_path(), json).map_err(|e| e.to_string())
+    }
+
+    /// Clamp values that break behavior at extremes. The settings UI
+    /// enforces ranges, but the config file is user-editable JSON, and
+    /// commands receive whatever the frontend sends.
+    pub fn sanitized(mut self) -> Self {
+        self.text_size_limit_kb = self.text_size_limit_kb.max(1);
+        self.text_count_limit = self.text_count_limit.max(1);
+        self.image_count_limit = self.image_count_limit.max(1);
+        self.image_memory_budget_mb = self.image_memory_budget_mb.max(1);
+        self.image_size_limit_mb = self.image_size_limit_mb.max(1);
+        self
     }
 }
 

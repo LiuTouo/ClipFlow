@@ -100,7 +100,11 @@ function bindEvents() {
     } catch (err) {
       console.error("Save failed:", err);
       const msg = String(err);
-      showError(msg.includes("already in use") ? t("hotkeyInUse") : msg);
+      showError(
+        msg.includes("already in use") ? t("hotkeyInUse")
+          : msg.includes("must include") ? t("hotkeyNeedModifier")
+            : msg
+      );
     }
   });
 
@@ -132,9 +136,10 @@ function bindEvents() {
     if (e.ctrlKey) parts.push("Ctrl");
     if (e.shiftKey) parts.push("Shift");
     if (e.altKey) parts.push("Alt");
+    if (e.metaKey) parts.push("Super");
 
     const key = e.key;
-    const isModifier = key === "Control" || key === "Shift" || key === "Alt";
+    const isModifier = key === "Control" || key === "Shift" || key === "Alt" || key === "Meta";
     if (!isModifier) {
       parts.push(key.length === 1 ? key.toUpperCase() : key);
 
