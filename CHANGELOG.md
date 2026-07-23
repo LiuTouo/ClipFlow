@@ -4,6 +4,21 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.4.4] - 2026-07-23
+
+### Fixed
+
+- 歷史達到上限時，新複製的內容會被立刻淘汰（最舊的反而永久保留）；改為正確淘汰最舊的未釘選項目
+- 複製超過單則文字大小上限的內容時，截斷點落在多位元組字元中間會使監聽執行緒崩潰、剪貼簿監聽靜默失效；改為依 UTF-8 字元邊界截斷
+- 刻意重複複製相同內容不再被靜默丟棄：會更新時間並移到最頂（防抖動現在僅在時間窗內丟棄相同內容）
+- 讀取剪貼簿文字與檔案清單時缺少邊界檢查，畸形資料可能造成越界讀取；一併拒絕 ANSI 檔案清單格式，圖片 DIB 解碼加入維度上限與溢位檢查
+- 「復原刪除」改為依 Clip id 比對，過期的復原請求不再可能還原錯誤的項目
+
+### Security
+
+- 啟用 Content Security Policy，限制 webview 可載入的指令碼、樣式、圖片與連線來源
+- 免安裝版更新下載前改以 minisign 簽章驗證（與安裝版 updater 同一把金鑰），驗證通過才寫入磁碟；下載來源限定 GitHub 網域、逐跳驗證重新導向，另加下載大小與逾時上限。CI 發行流程同步改為自動簽署免安裝執行檔
+
 ## [0.4.3] - 2026-07-22
 
 ### Changed
@@ -108,6 +123,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.4.4]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.0...v0.4.1
