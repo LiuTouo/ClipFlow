@@ -597,6 +597,33 @@ fn wrap_dib_as_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     Some(bmp)
 }
 
+/// Foreground window handle as an integer (0 when none), for comparisons.
+pub fn foreground_hwnd() -> isize {
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize
+    }
+}
+
+/// True when the foreground window is the desktop shell (Progman/WorkerW).
+/// Ctrl+V there is never the intent — with a file clip it would dump the
+/// referenced files onto the desktop.
+pub fn foreground_is_desktop() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow};
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+        let mut buf = [0u16; 64];
+        let len = GetClassNameW(hwnd, &mut buf);
+        if len == 0 {
+            return false;
+        }
+        let class = String::from_utf16_lossy(&buf[..len as usize]);
+        class == "Progman" || class == "WorkerW"
+    }
+}
+
 pub fn get_foreground_info() -> (String, String) {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
@@ -651,6 +678,21 @@ pub fn get_foreground_info() -> (String, String) {
     }
 }
 
+/// Open the clipboard with a few retries: another app may hold it briefly
+/// (clipboard managers, Office, remote desktop), and one failed attempt
+/// must not silently kill the user's paste.
+fn open_clipboard_retry() -> Result<(), String> {
+    for attempt in 0..5 {
+        if unsafe { OpenClipboard(HWND(std::ptr::null_mut())) }.is_ok() {
+            return Ok(());
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    Err("Cannot open clipboard (busy)".to_string())
+}
+
 pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -664,9 +706,9 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
         GlobalUnlock(hmem);
 
-        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
+        if let Err(e) = open_clipboard_retry() {
             global_free(hmem);
-            return Err("Cannot open".to_string());
+            return Err(e);
         }
         let _ = EmptyClipboard();
         if SetClipboardData(CF_UNICODETEXT, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
@@ -688,9 +730,9 @@ pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
         GlobalUnlock(hmem);
 
-        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
+        if let Err(e) = open_clipboard_retry() {
             global_free(hmem);
-            return Err("Cannot open".to_string());
+            return Err(e);
         }
         let _ = EmptyClipboard();
         if SetClipboardData(CF_DIB, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
@@ -758,10 +800,10 @@ pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
         std::ptr::copy_nonoverlapping(wide_text.as_ptr(), tptr as *mut u16, wide_text.len());
         GlobalUnlock(htext);
 
-        if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
+        if let Err(e) = open_clipboard_retry() {
             global_free(hdrop);
             global_free(htext);
-            return Err("Cannot open".to_string());
+            return Err(e);
         }
         let _ = EmptyClipboard();
         if SetClipboardData(CF_HDROP, HANDLE(hdrop as *mut std::ffi::c_void)).is_err() {
@@ -804,16 +846,55 @@ pub fn write_files_to_clipboard_from_text(text: &str) -> Result<String, String> 
     Ok("files".to_string())
 }
 
+/// Send Ctrl+V via SendInput (the modern input API — keybd_event is legacy).
+/// First releases any modifier the user is still physically holding (e.g.
+/// Shift from the Ctrl+Shift+V hotkey): otherwise the target app reads the
+/// stroke as Ctrl+Shift+V — "paste special" in Office, ignored elsewhere —
+/// which looks exactly like "paste doesn't work".
 pub fn simulate_ctrl_v() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, KEYBD_EVENT_FLAGS, VK_CONTROL,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+        KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
     };
 
+    fn input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
     unsafe {
-        keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
-        keybd_event(0x56, 0, KEYBD_EVENT_FLAGS(0), 0);
-        keybd_event(0x56, 0, KEYBD_EVENT_FLAGS(2), 0);
-        keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(2), 0);
+        let held = |vk: u16| (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0;
+        let (shift_held, alt_held, ctrl_held) =
+            (held(VK_SHIFT.0), held(VK_MENU.0), held(VK_CONTROL.0));
+
+        let mut seq = Vec::with_capacity(6);
+        if shift_held { seq.push(input(VK_SHIFT, true)); }
+        if alt_held { seq.push(input(VK_MENU, true)); }
+        seq.push(input(VK_CONTROL, false));
+        seq.push(input(VIRTUAL_KEY(0x56), false)); // V down
+        seq.push(input(VIRTUAL_KEY(0x56), true));  // V up
+        seq.push(input(VK_CONTROL, true));
+        SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
+
+        // Restore modifiers the user is still physically holding so their
+        // key state matches reality again.
+        let mut restore = Vec::new();
+        if shift_held && held(VK_SHIFT.0) { restore.push(input(VK_SHIFT, false)); }
+        if alt_held && held(VK_MENU.0) { restore.push(input(VK_MENU, false)); }
+        if ctrl_held && held(VK_CONTROL.0) { restore.push(input(VK_CONTROL, false)); }
+        if !restore.is_empty() {
+            SendInput(&restore, std::mem::size_of::<INPUT>() as i32);
+        }
     }
 }
 

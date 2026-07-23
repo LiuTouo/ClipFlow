@@ -280,6 +280,7 @@ async function pasteClip(clip: Clip) {
     }
   } catch (err) {
     console.error("Paste failed:", err);
+    showToast(t("pasteFailed"));
   }
 }
 
@@ -305,6 +306,7 @@ async function copyOnly(clip: Clip) {
     showToast(t(toastKey));
   } catch (err) {
     console.error("Copy failed:", err);
+    showToast(t("copyFailed"));
   }
 }
 

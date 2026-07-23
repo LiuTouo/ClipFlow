@@ -59,6 +59,8 @@ const I18N: Record<string, Record<string, string>> = {
     copyOnlyTitle: "純複製",
     deleteTitle: "刪除",
     filesMissingFallback: "來源檔案已不存在，改複製路徑文字",
+    pasteFailed: "貼上失敗，請重試（剪貼簿可能被其他程式佔用）",
+    copyFailed: "複製失敗，請重試（剪貼簿可能被其他程式佔用）",
     // About
     aboutTitle: "關於 ClipFlow",
     tagline: "現代、輕量的 Windows 剪貼簿歷史工具。",
@@ -132,6 +134,8 @@ const I18N: Record<string, Record<string, string>> = {
     copyOnlyTitle: "Copy only",
     deleteTitle: "Delete",
     filesMissingFallback: "Source files no longer exist — copied the path text instead",
+    pasteFailed: "Paste failed — please try again (the clipboard may be busy)",
+    copyFailed: "Copy failed — please try again (the clipboard may be busy)",
     // About
     aboutTitle: "About ClipFlow",
     tagline: "A modern, lightweight clipboard history tool for Windows.",

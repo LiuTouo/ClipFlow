@@ -284,10 +284,30 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
 }
 
 /// Write content to the clipboard, hide the Panel so focus returns to the
-/// previous window, wait for focus to settle, then simulate Ctrl+V.
+/// previous window, WAIT for that focus change to actually happen (a blind
+/// fixed sleep loses pastes whenever focus is slow to move), then send
+/// Ctrl+V.
 async fn hide_and_paste(app: &tauri::AppHandle) {
+    let panel_hwnd = clipboard::foreground_hwnd(); // the Panel has focus now
     hide_panel(app);
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Poll until the foreground leaves our Panel (max ~1s), then let it
+    // settle briefly. On timeout, paste anyway — best effort.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
+    loop {
+        let fg = clipboard::foreground_hwnd();
+        if (fg != 0 && fg != panel_hwnd) || std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Never paste into the desktop shell: with a file clip, Ctrl+V on the
+    // desktop copies the referenced files there. The content stays on the
+    // clipboard for a manual paste instead (per the Paste spec).
+    if clipboard::foreground_is_desktop() {
+        log("[ClipFlow] paste suppressed: foreground is the desktop shell");
+        return;
+    }
     clipboard::simulate_ctrl_v();
 }
 
