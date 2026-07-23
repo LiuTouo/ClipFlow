@@ -1,6 +1,6 @@
 [package]
 name = "clipflow"
-version = "0.4.4"
+version = "0.4.5"
 description = "Modern lightweight clipboard history tool"
 authors = ["LiuT"]
 edition = "2021"

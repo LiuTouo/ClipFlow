@@ -4,6 +4,16 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.4.5] - 2026-07-23
+
+### Fixed
+
+- 貼上不再用固定延遲猜測焦點：隱藏 Panel 後會等到焦點真的離開才模擬 Ctrl+V，焦點切換慢的程式不再漏貼
+- 熱鍵開啟 Panel 後快速按 Enter 貼上時，會先釋放仍按住的 Shift/Alt 再還原，不再被目標程式誤判為 Ctrl+Shift+V（選擇性貼上）而看似貼上無效；模擬按鍵改用 SendInput
+- 剪貼簿被其他程式短暫占用時，寫入會自動重試（5 次），不再一次失敗就放棄
+- 焦點落在桌面時不再送出 Ctrl+V，避免檔案歷史被複製一份到桌面；內容保留在剪貼簿供手動貼上
+- 貼上／複製失敗時改為顯示提示，不再靜默失敗
+
 ## [0.4.4] - 2026-07-23
 
 ### Fixed
@@ -123,6 +133,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.4.5]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.1...v0.4.2
