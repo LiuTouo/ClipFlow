@@ -355,6 +355,7 @@ dependencies = [
  "base64 0.22.1",
  "hex",
  "image",
+ "minisign-verify",
  "rusqlite",
  "serde",
  "serde_json",

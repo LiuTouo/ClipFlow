@@ -55,11 +55,20 @@ jobs:
         shell: pwsh
         run: Copy-Item "src-tauri/target/release/clipflow.exe" "ClipFlow_${{ github.ref_name }}_x64-portable.exe"
 
+      # Portable downloads verify this minisign signature (same key as the
+      # NSIS updater artifacts) before the new exe is written to disk.
+      - name: Sign portable exe
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri signer sign "ClipFlow_${{ github.ref_name }}_x64-portable.exe"
+
       - name: Upload portable asset
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" "ClipFlow_${{ github.ref_name }}_x64-portable.exe" --clobber
+        run: gh release upload "${{ github.ref_name }}" "ClipFlow_${{ github.ref_name }}_x64-portable.exe" "ClipFlow_${{ github.ref_name }}_x64-portable.exe.sig" --clobber
 
       # tauri-action creates the release with the commit message as body.
       # Replace it with this version's CHANGELOG section (header line dropped —

@@ -98,18 +98,26 @@ async function portableCheck() {
     setStatus(t("portableAssetMissing"));
     return;
   }
+  // CI signs the portable exe with the updater minisign key; without the
+  // signature the backend refuses the download, so don't start one.
+  const sigAsset = data.assets.find((a) => a.name === `${asset.name}.sig`);
+  if (!sigAsset) {
+    setStatus(t("portableSigMissing"));
+    return;
+  }
 
   setStatus(t("updateAvailable", { v: latest }));
-  await portableDownload(asset);
+  await portableDownload(asset, sigAsset);
 }
 
 /** The actual download runs in Rust (update::download_portable_update):
  * GitHub's asset CDN omits CORS headers, so webview fetch always fails. */
-async function portableDownload(asset: GhAsset) {
+async function portableDownload(asset: GhAsset, sigAsset: GhAsset) {
   setStatus(t("downloadingUpdate"));
   try {
     const path = await invoke<string>("download_portable_update", {
       url: asset.browser_download_url,
+      sigUrl: sigAsset.browser_download_url,
     });
     setStatus(t("portableUpdateReady", { path }));
     show("btn-open-folder", true);
