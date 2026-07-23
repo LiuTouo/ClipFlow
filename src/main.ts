@@ -319,9 +319,14 @@ async function deleteClip(clip: Clip) {
 
     // Show undo toast
     showToast(t("deleted"), async () => {
-      await invoke("undo_delete");
-      clips = await invoke("get_clips");
-      render();
+      try {
+        await invoke("undo_delete", { id: clip.id });
+        clips = await invoke("get_clips");
+        render();
+      } catch (err) {
+        // Stale undo — a newer delete already superseded this one.
+        showToast(String(err));
+      }
     });
   } catch (err) {
     // Already gone in the backend (e.g. evicted) — sync the local list

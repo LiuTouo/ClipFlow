@@ -95,10 +95,17 @@ fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> 
 }
 
 #[tauri::command]
-fn undo_delete(state: tauri::State<AppState>) -> Result<Clip, String> {
+fn undo_delete(id: String, state: tauri::State<AppState>) -> Result<Clip, String> {
     let clip = {
         let mut last = state.last_deleted.lock().unwrap();
-        last.take()
+        // Undo is keyed to the deleted Clip's id: only the most recent delete
+        // is restorable, and a stale undo request (e.g. from an outdated
+        // toast) must not restore some other Clip.
+        if last.as_ref().is_some_and(|c| c.id == id) {
+            last.take()
+        } else {
+            None
+        }
     };
     if let Some(clip) = clip {
         let (restored, evicted) = {
@@ -343,6 +350,9 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
 
         let mut last_seq: u32 = 0;
         let mut last_hash: Option<(String, u64)> = None;
+        // First-observation time of an unconsumed clipboard change, used for
+        // debounce comparisons (see the capture match below).
+        let mut pending_since: Option<u64> = None;
         // Own exe name, so content ClipFlow itself wrote (paste / copy-only
         // while the Panel had focus) keeps its original source attribution.
         let self_exe = std::env::current_exe()
@@ -361,6 +371,7 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                     // Keep last_seq in sync while paused: copies made during
                     // the pause are permanently lost, not captured on resume.
                     last_seq = current_seq;
+                    pending_since = None;
                     continue;
                 }
             }
@@ -375,6 +386,11 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64;
+
+            // When this clipboard change was FIRST observed. Debounce
+            // comparisons use this, not the (later) capture time — polling
+            // quantizes observation to the 200ms poll interval.
+            let first_seen = *pending_since.get_or_insert(now);
 
             // Debounce: too soon after the last capture. Do NOT consume the
             // sequence number — the next poll retries and picks up the latest
@@ -391,10 +407,18 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
             match clipboard::capture_clipboard(&config) {
                 Ok(mut clip) => {
                     last_seq = current_seq;
+                    pending_since = None;
                     let content_hash = clip.content_hash.clone();
 
-                    if let Some((ref hash, _)) = last_hash {
-                        if *hash == content_hash {
+                    // Same content first observed inside the debounce window:
+                    // double-copy noise, drop it silently. The same content
+                    // observed AFTER the window is a deliberate re-copy — fall
+                    // through so insert() refreshes captured_at/source and
+                    // moves the Clip to the top of history.
+                    if let Some((ref hash, ts)) = last_hash {
+                        if *hash == content_hash
+                            && first_seen.saturating_sub(ts) < config.debounce_ms
+                        {
                             continue;
                         }
                     }
@@ -426,6 +450,7 @@ fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>
                 Err(clipboard::CaptureError::Skip(reason)) => {
                     log(&format!("[ClipFlow] capture skipped: {}", reason));
                     last_seq = current_seq;
+                    pending_since = None;
                     continue;
                 }
             }
