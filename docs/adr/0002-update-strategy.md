@@ -28,6 +28,13 @@ against a portable exe.
   (ureq) to `clipflow-update.exe` next to the running exe — the webview's
   fetch can't follow GitHub's asset CDN redirect (no CORS headers). The
   user quits and overwrites manually; Windows cannot replace a running exe.
+- **Portable verification**: CI signs the portable exe with the same minisign
+  key as the NSIS updater artifacts (`tauri signer sign`, uploading
+  `<asset>.sig`). `download_portable_update` accepts only https URLs on
+  `github.com` / `*.githubusercontent.com`, re-validating every redirect
+  hop, and writes `clipflow-update.exe` ONLY after the downloaded bytes
+  verify against the pubkey embedded in the binary — the webview picks the
+  release asset but cannot turn that into an arbitrary-URL file drop.
 - **Config/data location**: portable keeps everything next to the exe;
   installed builds use `%APPDATA%\ClipFlow` (the install dir may be
   Program Files, which is not user-writable). See `models::data_dir`.
@@ -43,5 +50,8 @@ against a portable exe.
   automatic update path is dead — they must be replaced manually once.
 - Before the first CI release, `latest.json` 404s; checks fail silently
   (logged), the About page shows "no release yet".
+- Releases cut before portable signing existed have no `.sig` asset; the
+  About page refuses them with "no signature file". Since updates only move
+  forward, this only blocks "updating" toward those older releases.
 - Losing the signing private key breaks updates permanently; it must be
   backed up alongside the repo secrets.

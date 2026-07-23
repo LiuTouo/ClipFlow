@@ -12,7 +12,7 @@ A unique clipboard entry. Deduplicated by content hash — the same content copi
 - `kind` — Text, Image, or FilePaths
 - `content` — raw content (text string, raw pixel data, or list of file paths)
 - `content_hash` — SHA-256 of content (computed on the *pre-truncation* original for Text Clips), used for deduplication
-- `preview` — first 200 chars for Text; 48×48 JPEG thumbnail for Image; file names for FilePaths
+- `preview` — first 200 chars for Text; 200px-wide JPEG thumbnail for Image; file names for FilePaths
 - `truncated` — true if this Text Clip exceeded the size limit and was cut. The preview suffix shows `[Truncated, original X KB]`
 - `source` — the Source application that owned the foreground window at capture time
 - `captured_at` — timestamp of the most recent copy
@@ -20,7 +20,7 @@ A unique clipboard entry. Deduplicated by content hash — the same content copi
 - `byte_size` — content size in bytes (original size before truncation)
 
 **Invariants:**
-- Text Clips: `byte_size` ≤ `text_size_limit` (default 100 KB, user-configurable). Content exceeding the limit is truncated; the original size is preserved in `byte_size`. A truncated Clip is rendered with a warning accent color in the Panel to distinguish it from complete Clips.
+- Text Clips: stored content is capped at `text_size_limit` (default 100 KB, user-configurable). Content exceeding the limit is truncated at a UTF-8 character boundary; `byte_size` keeps the original pre-truncation size. A truncated Clip is rendered with a warning accent color in the Panel to distinguish it from complete Clips.
 - Image Clips: stored as compressed bitmap. A 200px-wide thumbnail is generated on capture. A per-image size limit (`image_size_limit`, default 10 MB, configurable) applies — images exceeding it are compressed or downscaled to fit.
 - FilePaths Clips: only the paths are stored, not the file contents.
 - Deduplication: no two Clips may share the same `content_hash`. For Text and FilePaths, the hash is computed on the original content. For Image, the hash is a pixel-level SHA-256 of the raw bitmap data — byte-for-byte, not perceptual. Different encodings of the "same" image produce different Clips. A new copy of existing content updates `captured_at` and `source`, then moves the Clip to the top of history.
@@ -37,12 +37,12 @@ The foreground application window that was active when a Clip was captured.
 - `icon` — extracted application icon (cached per executable)
 
 ### ClipboardMonitor
-The background Rust service that watches the Windows clipboard via `AddClipboardFormatListener`. Runs for the lifetime of the app.
+The background Rust thread that watches the Windows clipboard by polling `GetClipboardSequenceNumber` every 200ms. Runs for the lifetime of the app.
 
 **Behavior:**
-- On clipboard change: reads available formats, determines Clip kind by priority (Image > Text > FilePaths), computes content hash, deduplicates, applies exclusion list, applies debounce (200ms), stores valid Clips in History.
+- On clipboard change: reads available formats, determines Clip kind by priority (Image > FilePaths > Text), computes content hash, deduplicates, applies exclusion list, applies debounce (200ms), stores valid Clips in History.
 - Exclusion list: a set of executable names (e.g. `1Password.exe`, `Bitwarden.exe`, `KeePass.exe`). Clips captured while any of these is the foreground window are discarded.
-- Debounce: if the same content hash appears within 200ms of the previous capture, the second event is silently dropped (handles double Ctrl+C).
+- Debounce: a clipboard change observed within 200ms of the previous capture is deferred, then captures the latest content once the window passes; if that yields the same content hash first observed inside the window, it is silently dropped (handles double Ctrl+C). Re-copying the same content AFTER the window counts as a new copy — `captured_at` and `source` refresh and the Clip moves to the top.
 - Pause: when monitoring is paused (via Tray menu), all clipboard changes are ignored. On resume, the current clipboard content is NOT automatically captured — only new changes are recorded. Paused copies are permanently lost.
 
 ### History
@@ -52,7 +52,7 @@ The ordered, in-memory collection of all Clips. Managed by the Rust backend, exp
 
 **Capacity:** dual limit for images — count (`image_count_limit`, default 10) and memory (`image_memory_budget`, default 50 MB). Text: max 100 Clips (configurable). FilePaths Clips count toward text. Eviction is oldest-unpinned-first on whichever image limit is breached first.
 
-**Persistence:** in-memory by default. Optional SQLite write-through persistence via the `persist` config option (Settings checkbox). The database (`clipflow.db`) lives next to the executable. When enabled, every capture/delete/pin/eviction is mirrored to SQLite and the History is reloaded on startup. Disabling persistence deletes `clipflow.db`.
+**Persistence:** in-memory by default. Optional SQLite write-through persistence via the `persist` config option (Settings checkbox). The database (`clipflow.db`) lives in the data dir — next to the exe for portable builds, `%APPDATA%\ClipFlow` for installed builds (see Portable). When enabled, every capture/delete/pin/eviction is mirrored to SQLite and the History is reloaded on startup. Disabling persistence deletes `clipflow.db`.
 
 ### Pin
 A marker on a Clip that keeps it at the top of the History, above a visual divider.
@@ -86,7 +86,7 @@ The floating WebView window that displays the History. Created on first invocati
 While the Panel is open, new clipboard captures from the ClipboardMonitor still arrive in real time. The list updates without scrolling to the top, preserving the user's current scroll position.
 
 ### Search
-Case-insensitive substring matching against Clip preview text. Input in the search box filters the Clip list in real time. No fuzzy matching. No typo tolerance. Zero additional dependencies.
+Case-insensitive substring matching against Clip preview text, source app name, and source window title. Input in the search box filters the Clip list in real time. No fuzzy matching. No typo tolerance. Zero additional dependencies.
 
 ### Paste
 The action of selecting a Clip and inserting it into the previously focused application.
@@ -108,7 +108,7 @@ All user-facing UI (Panel, Settings, About, tray menu) is localized via the `lan
 ### Portable
 ClipFlow runs without installation or registry writes. Startup is achieved via a `.lnk` shortcut in `shell:startup` with `--hidden` flag — no registry Run key.
 
-One exe also ships inside the NSIS installer. Config and data live next to the exe for portable builds; installed builds use `%APPDATA%\ClipFlow` because the install dir (e.g. Program Files) is not user-writable. The channel is detected at runtime via the NSIS uninstall registry key; installed builds auto-update via tauri-plugin-updater, portable builds download the new exe from GitHub Releases for manual overwrite. See `docs/adr/0002-update-strategy.md`.
+One exe also ships inside the NSIS installer. Config and data live next to the exe for portable builds; installed builds use `%APPDATA%\ClipFlow` because the install dir (e.g. Program Files) is not user-writable. The channel is detected at runtime via the NSIS uninstall registry key; installed builds auto-update via tauri-plugin-updater, portable builds download the new exe from GitHub Releases for manual overwrite (minisign-verified against the embedded updater pubkey before anything is written to disk). See `docs/adr/0002-update-strategy.md`.
 
 ---
 
