@@ -40,6 +40,20 @@ pub fn hash_content(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Cut `text` to at most `limit` bytes, backing off to a UTF-8 char
+/// boundary — slicing a String mid-char panics, and a panic on the monitor
+/// thread silently kills clipboard monitoring. Returns (content, truncated).
+fn truncate_text(text: &str, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text.to_string(), false);
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
 pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, CaptureError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -159,21 +173,41 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
                 return Err(CaptureError::Skip("No HDROP".to_string()));
             }
         };
+        let mem_size = global_size(handle);
+        if mem_size < std::mem::size_of::<DROPFILES>() {
+            let _ = CloseClipboard();
+            return Err(CaptureError::Skip("HDROP data too small".to_string()));
+        }
         let ptr = global_lock(handle);
         if ptr.is_null() {
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("Cannot lock HDROP data".to_string()));
         }
         let dropfiles = &*(ptr as *const DROPFILES);
+        // ANSI (fWide == 0) path lists come from legacy apps; skip instead
+        // of decoding single-byte text as UTF-16 garbage.
+        if dropfiles.fWide.0 == 0 {
+            global_unlock(handle);
+            let _ = CloseClipboard();
+            return Err(CaptureError::Skip("ANSI HDROP not supported".to_string()));
+        }
         let file_offset = dropfiles.pFiles as usize;
+        if file_offset >= mem_size {
+            global_unlock(handle);
+            let _ = CloseClipboard();
+            return Err(CaptureError::Skip("Bad HDROP offset".to_string()));
+        }
+        // Walk the double-NUL-terminated list but never past the allocation:
+        // clipboard data is untrusted and may lack proper terminators.
         let base = ptr as usize + file_offset;
+        let end = ptr as usize + mem_size;
 
         let mut files = Vec::new();
         let mut pos = base;
-        loop {
+        while pos + 2 <= end {
             let mut chars = Vec::new();
             let mut pp = pos as *const u16;
-            loop {
+            while (pp as usize) + 2 <= end {
                 let c = *pp;
                 if c == 0 { break; }
                 chars.push(c);
@@ -181,7 +215,7 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
             }
             if chars.is_empty() { break; }
             files.push(String::from_utf16_lossy(&chars));
-            pos += (chars.len() + 1) * 2;
+            pos = pp as usize + 2; // skip this entry's NUL terminator
         }
 
         global_unlock(handle);
@@ -246,9 +280,13 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("Cannot lock text data".to_string()));
         }
+        // Scan for the NUL terminator but never past the allocation: a
+        // clipboard owner is not required to terminate, and reading past
+        // the block is UB. Unterminated data is taken whole.
+        let max_units = global_size(handle) / 2;
         let mut chars = Vec::new();
         let mut p = ptr as *const u16;
-        loop {
+        for _ in 0..max_units {
             let c = *p;
             if c == 0 { break; }
             chars.push(c);
@@ -262,11 +300,7 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
         let original_size = text.len() as u64;
         let limit = config.text_size_limit_kb as usize * 1024;
 
-        let (content, truncated) = if text.len() > limit {
-            (text[..limit].to_string(), true)
-        } else {
-            (text.clone(), false)
-        };
+        let (content, truncated) = truncate_text(&text, limit);
 
         let content_hash = {
             let mut hasher = Sha256::new();
@@ -430,6 +464,21 @@ fn decode_dib(dib: &[u8]) -> Result<image::RgbaImage, String> {
         return Err(format!("unsupported bpp {}", bpp));
     }
 
+    // Reject absurd dimensions from crafted headers before any arithmetic
+    // or allocation happens — clipboard data is untrusted. 32k×32k covers
+    // any real screenshot many times over; 150M px caps the decode buffer.
+    const MAX_DIMENSION: usize = 32768;
+    const MAX_PIXELS: usize = 150_000_000;
+    if width > MAX_DIMENSION || height > MAX_DIMENSION {
+        return Err("implausible dimensions".to_string());
+    }
+    let pixel_count = width
+        .checked_mul(height)
+        .ok_or_else(|| "size overflow".to_string())?;
+    if pixel_count > MAX_PIXELS {
+        return Err("image too large".to_string());
+    }
+
     // Channel masks and the offset where pixel data begins.
     let (r_mask, g_mask, b_mask, a_mask, pixel_start) = match compression {
         0 => (0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0u32, header_size), // BI_RGB
@@ -456,7 +505,11 @@ fn decode_dib(dib: &[u8]) -> Result<image::RgbaImage, String> {
 
     let bytes_per_px = bpp / 8;
     let stride = (width * bpp + 31) / 32 * 4; // rows are DWORD-aligned
-    if dib.len() < pixel_start + stride * height {
+    let pixel_bytes = stride
+        .checked_mul(height)
+        .and_then(|n| pixel_start.checked_add(n))
+        .ok_or_else(|| "size overflow".to_string())?;
+    if dib.len() < pixel_bytes {
         return Err("truncated pixel data".to_string());
     }
 
@@ -469,7 +522,7 @@ fn decode_dib(dib: &[u8]) -> Result<image::RgbaImage, String> {
         (((px & mask) >> shift) * 255 / max) as u8
     };
 
-    let mut buf = vec![0u8; width * height * 4];
+    let mut buf = vec![0u8; pixel_count * 4];
     for y in 0..height {
         let src_row = if top_down { y } else { height - 1 - y };
         let row_off = pixel_start + src_row * stride;
@@ -761,5 +814,96 @@ pub fn simulate_ctrl_v() {
         keybd_event(0x56, 0, KEYBD_EVENT_FLAGS(0), 0);
         keybd_event(0x56, 0, KEYBD_EVENT_FLAGS(2), 0);
         keybd_event(VK_CONTROL.0 as u8, 0, KEYBD_EVENT_FLAGS(2), 0);
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_text;
+
+    #[test]
+    fn short_text_is_not_truncated() {
+        let (content, truncated) = truncate_text("hello", 100);
+        assert!(!truncated);
+        assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn ascii_truncates_at_the_byte_limit() {
+        let (content, truncated) = truncate_text(&"a".repeat(200), 100);
+        assert!(truncated);
+        assert_eq!(content.len(), 100);
+    }
+
+    #[test]
+    fn multibyte_text_truncates_on_a_char_boundary() {
+        // 3-byte chars; 100 % 3 != 0, so the old text[..limit] slice panicked
+        // here — and a panic on the monitor thread killed clipboard watching.
+        let input = "繁".repeat(50); // 150 bytes
+        let (content, truncated) = truncate_text(&input, 100);
+        assert!(truncated);
+        assert_eq!(content.len(), 99);
+        assert_eq!(content.chars().count(), 33);
+    }
+}
+
+#[cfg(test)]
+mod dib_tests {
+    use super::decode_dib;
+
+    /// 40-byte BITMAPINFOHEADER for the given dimensions and bit depth.
+    fn dib_header(width: i32, height: i32, bpp: u16) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&40u32.to_le_bytes());
+        v.extend_from_slice(&width.to_le_bytes());
+        v.extend_from_slice(&height.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&bpp.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+        v.extend_from_slice(&[0u8; 20]); // rest of the header
+        v
+    }
+
+    #[test]
+    fn decodes_a_bottom_up_24bpp_dib() {
+        let mut dib = dib_header(2, 2, 24);
+        // Bottom row first (bottom-up): red, green, then stride padding.
+        dib.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]);
+        // Top row: blue, white.
+        dib.extend_from_slice(&[255, 0, 0, 255, 255, 255, 0, 0]);
+        let img = decode_dib(&dib).unwrap();
+        assert_eq!(img.get_pixel(0, 0).0, [0, 0, 255, 255]); // top-left: blue
+        assert_eq!(img.get_pixel(1, 0).0, [255, 255, 255, 255]); // top-right: white
+        assert_eq!(img.get_pixel(0, 1).0, [255, 0, 0, 255]); // bottom-left: red
+        assert_eq!(img.get_pixel(1, 1).0, [0, 255, 0, 255]); // bottom-right: green
+    }
+
+    #[test]
+    fn decodes_a_top_down_32bpp_dib_with_opaque_alpha() {
+        let mut dib = dib_header(2, -2, 32); // negative height = top-down
+        // Top row first: red, green (BGRX byte order, alpha byte zero).
+        dib.extend_from_slice(&[0, 0, 255, 0, 0, 255, 0, 0]);
+        // Bottom row: blue, white.
+        dib.extend_from_slice(&[255, 0, 0, 0, 255, 255, 255, 0]);
+        let img = decode_dib(&dib).unwrap();
+        // BI_RGB 32bpp forces alpha opaque (many apps leave the byte zeroed).
+        assert_eq!(img.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(img.get_pixel(1, 0).0, [0, 255, 0, 255]);
+        assert_eq!(img.get_pixel(0, 1).0, [0, 0, 255, 255]);
+        assert_eq!(img.get_pixel(1, 1).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn rejects_implausible_dimensions() {
+        // A crafted header: i32::MAX wide would overflow naive stride math.
+        let dib = dib_header(i32::MAX, 2, 24);
+        assert!(decode_dib(&dib).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_pixel_data() {
+        let dib = dib_header(2, 2, 24); // header only, no pixel rows
+        assert!(decode_dib(&dib).is_err());
     }
 }

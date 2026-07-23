@@ -37,6 +37,19 @@ impl HistoryStore {
         }
     }
 
+    /// Index of the oldest (smallest `captured_at`) unpinned Clip matching
+    /// `pred`. Eviction must go by true age, not vec position: new Clips are
+    /// pushed to the back of the vec, so evicting from the back would discard
+    /// the fresh Clip and keep the oldest one forever.
+    fn oldest_unpinned(clips: &[Clip], pred: impl Fn(&Clip) -> bool) -> Option<usize> {
+        clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| pred(c) && !c.pinned)
+            .min_by_key(|(_, c)| c.captured_at)
+            .map(|(i, _)| i)
+    }
+
     /// Evict over-limit Clips (oldest unpinned first). Returns evicted ids.
     fn enforce_limits(&mut self, config: &AppConfig) -> Vec<String> {
         let mut evicted = Vec::new();
@@ -45,8 +58,7 @@ impl HistoryStore {
         loop {
             let text_count = self.clips.iter().filter(|c| c.kind != ClipKind::Image).count();
             if text_count <= config.text_count_limit { break; }
-            let idx = (0..self.clips.len()).rev()
-                .find(|&i| self.clips[i].kind != ClipKind::Image && !self.clips[i].pinned);
+            let idx = Self::oldest_unpinned(&self.clips, |c| c.kind != ClipKind::Image);
             if let Some(i) = idx { evicted.push(self.clips.remove(i).id); } else { break; }
         }
 
@@ -57,8 +69,7 @@ impl HistoryStore {
             let image_memory: u64 = self.clips.iter()
                 .filter(|c| c.kind == ClipKind::Image).map(|c| c.byte_size).sum();
             if image_count <= config.image_count_limit && image_memory <= image_memory_limit { break; }
-            let idx = (0..self.clips.len()).rev()
-                .find(|&i| self.clips[i].kind == ClipKind::Image && !self.clips[i].pinned);
+            let idx = Self::oldest_unpinned(&self.clips, |c| c.kind == ClipKind::Image);
             if let Some(i) = idx { evicted.push(self.clips.remove(i).id); } else { break; }
         }
 
@@ -100,5 +111,80 @@ impl HistoryStore {
         } else {
             Err("Clip not found".to_string())
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip(id: &str, kind: ClipKind, captured_at: u64, byte_size: u64) -> Clip {
+        Clip {
+            id: id.to_string(),
+            kind,
+            text_content: None,
+            image_data: None,
+            thumbnail_base64: None,
+            content_hash: format!("hash-{id}"),
+            preview: id.to_string(),
+            truncated: false,
+            source_exe: "test.exe".to_string(),
+            source_title: String::new(),
+            source_icon: None,
+            captured_at,
+            pinned: false,
+            byte_size,
+        }
+    }
+
+    fn text_clip(id: &str, captured_at: u64) -> Clip {
+        clip(id, ClipKind::Text, captured_at, 1)
+    }
+
+    #[test]
+    fn over_limit_evicts_oldest_not_the_new_clip() {
+        // Regression: eviction used to scan from the back of the vec — where
+        // push() had just placed the new Clip — so a full history discarded
+        // every fresh capture and kept the oldest Clips forever.
+        let mut h = HistoryStore::new();
+        let cfg = AppConfig { text_count_limit: 3, ..AppConfig::default() };
+        for i in 1..=3 {
+            h.insert(text_clip(&format!("c{i}"), i), &cfg);
+        }
+        let (_, evicted) = h.insert(text_clip("c4", 4), &cfg);
+        assert_eq!(evicted, vec!["c1".to_string()]);
+        assert!(h.clips.iter().any(|c| c.id == "c4"));
+        assert_eq!(h.clips.len(), 3);
+    }
+
+    #[test]
+    fn pinned_clips_are_never_evicted() {
+        let mut h = HistoryStore::new();
+        let cfg = AppConfig { text_count_limit: 3, ..AppConfig::default() };
+        for i in 1..=3 {
+            h.insert(text_clip(&format!("c{i}"), i), &cfg);
+        }
+        h.set_pinned("c1", true).unwrap();
+        let (_, evicted) = h.insert(text_clip("c4", 4), &cfg);
+        assert_eq!(evicted, vec!["c2".to_string()]);
+        assert!(h.clips.iter().any(|c| c.id == "c1"));
+    }
+
+    #[test]
+    fn image_memory_budget_evicts_oldest_image_first() {
+        let mut h = HistoryStore::new();
+        let cfg = AppConfig {
+            image_count_limit: 10,
+            image_memory_budget_mb: 1, // 1,048,576 bytes
+            ..AppConfig::default()
+        };
+        h.insert(clip("i1", ClipKind::Image, 1, 600_000), &cfg);
+        let (_, evicted) = h.insert(clip("i2", ClipKind::Image, 2, 600_000), &cfg);
+        assert_eq!(evicted, vec!["i1".to_string()]);
+        let (_, evicted) = h.insert(clip("i3", ClipKind::Image, 3, 600_000), &cfg);
+        assert_eq!(evicted, vec!["i2".to_string()]);
+        assert_eq!(h.clips.len(), 1);
+        assert_eq!(h.clips[0].id, "i3");
     }
 }
