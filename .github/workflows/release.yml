@@ -73,6 +73,10 @@ jobs:
       # tauri-action creates the release with the commit message as body.
       # Replace it with this version's CHANGELOG section (header line dropped —
       # the release page already shows version and date).
+      # Notes go INLINE, never --notes-file: gh's file read on Windows runners
+      # mangled a non-ASCII char into U+FFFD in the v0.4.4 notes even though
+      # the pwsh-written file was valid UTF-8. The UTF-16 command line
+      # preserves Unicode end to end.
       - name: Set release notes from CHANGELOG
         shell: pwsh
         env:
@@ -83,5 +87,4 @@ jobs:
           $m = [regex]::Match($changelog, "(?ms)^## \[$([regex]::Escape($ver))\].*?(?=^## \[|^\[\d|\z)")
           if (-not $m.Success) { throw "CHANGELOG.md has no section for $ver" }
           $notes = (($m.Value.Trim() -split "`r?`n") | Select-Object -Skip 1) -join "`n"
-          [System.IO.File]::WriteAllText("release-notes.md", $notes, [System.Text.UTF8Encoding]::new($false))
-          gh release edit "${{ github.ref_name }}" --notes-file release-notes.md
+          gh release edit "${{ github.ref_name }}" --notes=$notes
