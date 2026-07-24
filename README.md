@@ -63,6 +63,11 @@ ClipFlow\
 - 📌 pin · 📋 copy-only · 🗑 delete — per-clip side actions (panel stays open)
 - Tray icon (right-click) — Pause Monitoring, Settings, About, Quit
 
+## Known limitations
+
+- Paste cannot be injected into apps running **as administrator** (Windows UIPI blocks simulated input from non-elevated processes). The clip stays on the clipboard — press `Ctrl+V` manually.
+- The exclusion list matches the foreground app at copy time; password-manager autofill (where the manager is not in the foreground) cannot be excluded.
+
 ## Build from source
 
 Prerequisites: [Node.js](https://nodejs.org/) and [Rust](https://rustup.rs/).

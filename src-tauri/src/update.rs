@@ -24,13 +24,31 @@ fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
+/// Decode a REG_SZ/REG_EXPAND_SZ value from a raw u16 buffer. `len_bytes`
+/// is the byte count reported by RegQueryValueExW; the terminating null is
+/// stripped only when present (the API does not guarantee it for every
+/// value type, and blindly dropping the last unit eats a real character).
+fn parse_reg_sz(buf: &[u16], len_bytes: usize) -> Option<String> {
+    if len_bytes < 2 || len_bytes % 2 != 0 {
+        return None;
+    }
+    let mut units = &buf[..len_bytes / 2];
+    if units.last() == Some(&0) {
+        units = &units[..units.len() - 1];
+    }
+    if units.is_empty() {
+        return None;
+    }
+    Some(String::from_utf16_lossy(units))
+}
+
 /// InstallLocation from the NSIS uninstall key, if this machine has one.
 /// The value is written quoted ("C:\...\ClipFlow") — quotes are trimmed.
 fn install_location_from_registry() -> Option<PathBuf> {
     use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
         RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
-        HKEY_LOCAL_MACHINE, KEY_READ,
+        HKEY_LOCAL_MACHINE, KEY_READ, REG_EXPAND_SZ, REG_SZ,
     };
 
     let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ClipFlow");
@@ -44,20 +62,22 @@ fn install_location_from_registry() -> Option<PathBuf> {
             }
             let mut buf = [0u16; 512];
             let mut len = (buf.len() * 2) as u32;
+            let mut value_type = windows::Win32::System::Registry::REG_VALUE_TYPE::default();
             let ok = RegQueryValueExW(
                 hkey,
                 PCWSTR(value.as_ptr()),
                 None,
-                None,
+                Some(&mut value_type),
                 Some(buf.as_mut_ptr() as *mut u8),
                 Some(&mut len),
             );
             let _ = RegCloseKey(hkey);
-            if ok.is_ok() && len >= 2 {
-                let raw = String::from_utf16_lossy(&buf[..len as usize / 2 - 1]);
-                let trimmed = raw.trim_matches('"').trim_end_matches(['\\', '/']);
-                if !trimmed.is_empty() {
-                    return Some(PathBuf::from(trimmed));
+            if ok.is_ok() && matches!(value_type, REG_SZ | REG_EXPAND_SZ) {
+                if let Some(raw) = parse_reg_sz(&buf, len as usize) {
+                    let trimmed = raw.trim_matches('"').trim_end_matches(['\\', '/']);
+                    if !trimmed.is_empty() {
+                        return Some(PathBuf::from(trimmed));
+                    }
                 }
             }
         }
@@ -187,6 +207,28 @@ fn verify_with_pubkey(data: &[u8], sig_file: &str, pubkey_b64: &str) -> Result<(
         .map_err(|e| format!("Signature verification failed: {e}"))
 }
 
+/// Where a downloaded portable update is staged: next to the running exe.
+fn portable_update_dest() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(|dir| dir.join("clipflow-update.exe"))
+}
+
+/// Delete a leftover portable-update exe next to the current one. Runs at
+/// startup: clipflow-update.exe only ever holds a downloaded update pending
+/// manual overwrite, so once ClipFlow is running again the file is either
+/// already applied (a stale duplicate) or abandoned. Trade-off accepted per
+/// release flow: a downloaded-but-not-yet-applied update must be fetched
+/// again (~15 MB).
+pub fn cleanup_stale_portable_update() {
+    if let Some(stale) = portable_update_dest() {
+        if stale.exists() {
+            let _ = std::fs::remove_file(stale);
+        }
+    }
+}
+
 /// Download the newer portable exe next to the running one. Rust-side
 /// because GitHub's asset CDN omits CORS headers, so webview fetch fails.
 /// The exe is written ONLY after its minisign signature verifies — an
@@ -198,11 +240,7 @@ pub async fn download_portable_update(url: String, sig_url: String) -> Result<St
     }
     validate_download_url(&url)?;
     validate_download_url(&sig_url)?;
-    let dest = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .parent()
-        .ok_or_else(|| "No exe dir".to_string())?
-        .join("clipflow-update.exe");
+    let dest = portable_update_dest().ok_or_else(|| "No exe dir".to_string())?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let exe_bytes = download_validated(&url)?;
@@ -316,7 +354,7 @@ fn msg_box_yes_no(title: &str, body: &str) -> bool {
 /// CI release exists) are logged, never shown at startup.
 pub fn spawn_auto_update_check(app: tauri::AppHandle, config: Arc<Mutex<AppConfig>>) {
     let (enabled, lang) = {
-        let cfg = config.lock().unwrap();
+        let cfg = crate::lock(&config);
         (cfg.auto_update, cfg.language.clone())
     };
     if !enabled || !is_installed_build() {
@@ -387,6 +425,42 @@ mod tests {
     fn rejects_a_signature_from_another_key() {
         // The project's real update keypair did not sign this fixture.
         assert!(verify_with_pubkey(TEST_DATA, TEST_SIG, UPDATE_PUBKEY).is_err());
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        OsStr::new(s).encode_wide().collect()
+    }
+
+    #[test]
+    fn reg_sz_with_terminator_is_decoded() {
+        let mut buf = wide("C:\\Apps\\ClipFlow");
+        buf.push(0);
+        let len_bytes = (buf.len() * 2) as usize;
+        assert_eq!(
+            parse_reg_sz(&buf, len_bytes).as_deref(),
+            Some("C:\\Apps\\ClipFlow")
+        );
+    }
+
+    #[test]
+    fn reg_sz_without_terminator_is_decoded_whole() {
+        // The API does not guarantee a terminating null for every type.
+        let buf = wide("C:\\Apps\\ClipFlow");
+        let len_bytes = (buf.len() * 2) as usize;
+        assert_eq!(
+            parse_reg_sz(&buf, len_bytes).as_deref(),
+            Some("C:\\Apps\\ClipFlow")
+        );
+    }
+
+    #[test]
+    fn reg_sz_rejects_malformed_lengths() {
+        let buf = wide("AB");
+        assert_eq!(parse_reg_sz(&buf, 3), None); // odd byte count
+        assert_eq!(parse_reg_sz(&buf, 0), None); // empty
+        assert_eq!(parse_reg_sz(&[0u16], 2), None); // terminator only
     }
 
     #[test]

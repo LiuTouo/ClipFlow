@@ -61,6 +61,29 @@ impl Clip {
         hasher.update(captured_at.to_be_bytes());
         hex::encode(hasher.finalize())[..16].to_string()
     }
+
+    /// Clone everything except the raw image bytes (built field-by-field —
+    /// `..self.clone()` would deep-copy image_data first). For IPC responses,
+    /// where image_data is skip_serializing anyway and cloning up to 10 MB
+    /// per image per call is pure waste.
+    pub fn meta_clone(&self) -> Clip {
+        Clip {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            text_content: self.text_content.clone(),
+            image_data: None,
+            thumbnail_base64: self.thumbnail_base64.clone(),
+            content_hash: self.content_hash.clone(),
+            preview: self.preview.clone(),
+            truncated: self.truncated,
+            source_exe: self.source_exe.clone(),
+            source_title: self.source_title.clone(),
+            source_icon: self.source_icon.clone(),
+            captured_at: self.captured_at,
+            pinned: self.pinned,
+            byte_size: self.byte_size,
+        }
+    }
 }
 
 /// User-configurable settings stored in clipflow.config.json
@@ -145,13 +168,16 @@ impl AppConfig {
 
     /// Clamp values that break behavior at extremes. The settings UI
     /// enforces ranges, but the config file is user-editable JSON, and
-    /// commands receive whatever the frontend sends.
+    /// commands receive whatever the frontend sends. Upper bounds sit far
+    /// above the UI maxima: they only stop a hand-edited config from
+    /// allowing unbounded memory growth.
     pub fn sanitized(mut self) -> Self {
-        self.text_size_limit_kb = self.text_size_limit_kb.max(1);
-        self.text_count_limit = self.text_count_limit.max(1);
-        self.image_count_limit = self.image_count_limit.max(1);
-        self.image_memory_budget_mb = self.image_memory_budget_mb.max(1);
-        self.image_size_limit_mb = self.image_size_limit_mb.max(1);
+        self.text_size_limit_kb = self.text_size_limit_kb.clamp(1, 100_000);
+        self.text_count_limit = self.text_count_limit.clamp(1, 10_000);
+        self.image_count_limit = self.image_count_limit.clamp(1, 1_000);
+        self.image_memory_budget_mb = self.image_memory_budget_mb.clamp(1, 2_048);
+        self.image_size_limit_mb = self.image_size_limit_mb.clamp(1, 256);
+        self.debounce_ms = self.debounce_ms.min(10_000);
         self
     }
 }
@@ -177,4 +203,60 @@ pub fn data_dir() -> std::path::PathBuf {
 
 fn config_path() -> std::path::PathBuf {
     data_dir().join("clipflow.config.json")
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::AppConfig;
+
+    #[test]
+    fn zeros_are_raised_to_the_minimum() {
+        let cfg = AppConfig {
+            text_size_limit_kb: 0,
+            text_count_limit: 0,
+            image_count_limit: 0,
+            image_memory_budget_mb: 0,
+            image_size_limit_mb: 0,
+            ..AppConfig::default()
+        }
+        .sanitized();
+        assert_eq!(cfg.text_size_limit_kb, 1);
+        assert_eq!(cfg.text_count_limit, 1);
+        assert_eq!(cfg.image_count_limit, 1);
+        assert_eq!(cfg.image_memory_budget_mb, 1);
+        assert_eq!(cfg.image_size_limit_mb, 1);
+    }
+
+    #[test]
+    fn absurd_values_are_capped() {
+        // A hand-edited config must not allow unbounded memory growth.
+        let cfg = AppConfig {
+            text_size_limit_kb: u64::MAX,
+            text_count_limit: usize::MAX,
+            image_count_limit: usize::MAX,
+            image_memory_budget_mb: u64::MAX,
+            image_size_limit_mb: u64::MAX,
+            debounce_ms: u64::MAX,
+            ..AppConfig::default()
+        }
+        .sanitized();
+        assert_eq!(cfg.text_size_limit_kb, 100_000);
+        assert_eq!(cfg.text_count_limit, 10_000);
+        assert_eq!(cfg.image_count_limit, 1_000);
+        assert_eq!(cfg.image_memory_budget_mb, 2_048);
+        assert_eq!(cfg.image_size_limit_mb, 256);
+        assert_eq!(cfg.debounce_ms, 10_000);
+    }
+
+    #[test]
+    fn normal_values_pass_through_unchanged() {
+        let cfg = AppConfig::default().sanitized();
+        let d = AppConfig::default();
+        assert_eq!(cfg.text_size_limit_kb, d.text_size_limit_kb);
+        assert_eq!(cfg.text_count_limit, d.text_count_limit);
+        assert_eq!(cfg.image_count_limit, d.image_count_limit);
+        assert_eq!(cfg.image_memory_budget_mb, d.image_memory_budget_mb);
+        assert_eq!(cfg.image_size_limit_mb, d.image_size_limit_mb);
+        assert_eq!(cfg.debounce_ms, d.debounce_ms);
+    }
 }

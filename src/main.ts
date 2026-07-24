@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { setLanguage, applyI18n, t } from "./i18n";
+import { setLanguage, applyI18n, t, localizeBackendError } from "./i18n";
 import { applyTheme } from "./theme";
 
 interface Clip {
@@ -117,6 +117,10 @@ function render() {
     selectedIndex = visibleClips.length - 1;
   }
 
+  // Preserve the scroll position across the rebuild: setting innerHTML
+  // collapses the container and resets scrollTop to 0, which CONTEXT
+  // forbids — live captures must not scroll the list to the top.
+  const scrollTop = clipList.scrollTop;
   clipList.innerHTML = "";
   const searching = query.length > 0;
   const showEmpty = visibleClips.length === 0;
@@ -250,7 +254,9 @@ function render() {
     clipList.appendChild(el);
   });
 
-  // Scroll selected into view
+  // Restore the user's scroll position; keyboard navigation (a selected
+  // item) wins and scrolls the selection into view instead.
+  clipList.scrollTop = scrollTop;
   if (selectedIndex >= 0) {
     const selected = clipList.querySelector(".clip-item.selected");
     selected?.scrollIntoView({ block: "nearest" });
@@ -327,7 +333,7 @@ async function deleteClip(clip: Clip) {
         render();
       } catch (err) {
         // Stale undo — a newer delete already superseded this one.
-        showToast(String(err));
+        showToast(localizeBackendError(String(err)));
       }
     });
   } catch (err) {
@@ -348,7 +354,7 @@ async function togglePin(clip: Clip) {
     sortClips();
     render();
   } catch (err) {
-    showToast(String(err));
+    showToast(localizeBackendError(String(err)));
   }
 }
 

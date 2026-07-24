@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { applyI18n, setLanguage, t } from "./i18n";
+import { applyI18n, setLanguage, t, localizeBackendError } from "./i18n";
 import { applyTheme } from "./theme";
 
 interface AppConfig {
@@ -31,6 +31,14 @@ async function init() {
   applyI18n();
   document.title = `ClipFlow ${t("settings")}`;
   bindEvents();
+
+  // When startup hotkey registration failed, the backend opened this window
+  // and stashed the reason — show it inline so the user knows why they're
+  // here (CONTEXT: Hotkey conflict detection).
+  try {
+    const startupError = await invoke<string | null>("take_startup_error");
+    if (startupError) showError(localizeBackendError(startupError));
+  } catch (_) {}
 }
 
 function populateForm() {
@@ -105,12 +113,7 @@ function bindEvents() {
       await getCurrentWindow().close();
     } catch (err) {
       console.error("Save failed:", err);
-      const msg = String(err);
-      showError(
-        msg.includes("already in use") ? t("hotkeyInUse")
-          : msg.includes("must include") ? t("hotkeyNeedModifier")
-            : msg
-      );
+      showError(localizeBackendError(String(err)));
     }
   });
 
@@ -127,6 +130,17 @@ function bindEvents() {
     hotkeyInput.readOnly = true;
   });
 
+  // Clicking away mid-recording cancels it and restores the saved hotkey —
+  // otherwise the "press keys..." placeholder would be submitted as the
+  // hotkey value.
+  hotkeyInput.addEventListener("blur", () => {
+    if (!hotkeyInput.classList.contains("recording")) return;
+    hotkeyInput.value = config.hotkey;
+    hotkeyInput.classList.remove("recording");
+    hotkeyInput.readOnly = true;
+    clearError();
+  });
+
   hotkeyInput.addEventListener("keydown", (e) => {
     if (!hotkeyInput.classList.contains("recording")) return;
     e.preventDefault();
@@ -134,7 +148,7 @@ function bindEvents() {
     if (e.key === "Escape") {
       hotkeyInput.value = config.hotkey;
       hotkeyInput.classList.remove("recording");
-      hotkeyInput.readOnly = false;
+      hotkeyInput.readOnly = true;
       return;
     }
 
@@ -159,7 +173,8 @@ function bindEvents() {
         hotkeyInput.value = parts.join("+");
       }
       hotkeyInput.classList.remove("recording");
-      hotkeyInput.readOnly = false;
+      // Stay readOnly: the field is click-to-record only, never free-typed.
+      hotkeyInput.readOnly = true;
     }
   });
 }

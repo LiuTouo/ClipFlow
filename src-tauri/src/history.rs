@@ -78,10 +78,22 @@ impl HistoryStore {
 
     pub fn get_all(&self) -> Vec<Clip> {
         let mut all: Vec<Clip> = self.clips.clone();
-        all.sort_by(|a, b| {
+        Self::sort_display(&mut all);
+        all
+    }
+
+    /// All Clips in display order with raw image bytes stripped (they never
+    /// cross IPC — see models::Clip::image_data).
+    pub fn get_all_for_ipc(&self) -> Vec<Clip> {
+        let mut all: Vec<Clip> = self.clips.iter().map(Clip::meta_clone).collect();
+        Self::sort_display(&mut all);
+        all
+    }
+
+    fn sort_display(clips: &mut [Clip]) {
+        clips.sort_by(|a, b| {
             b.pinned.cmp(&a.pinned).then(b.captured_at.cmp(&a.captured_at))
         });
-        all
     }
 
     pub fn delete(&mut self, id: &str) -> Option<Clip> {
@@ -92,10 +104,15 @@ impl HistoryStore {
         }
     }
 
-    /// Look up a Clip by content hash (used to preserve the original source
-    /// app when the monitor re-captures content ClipFlow itself wrote).
-    pub fn find_by_hash(&self, content_hash: &str) -> Option<Clip> {
-        self.clips.iter().find(|c| c.content_hash == content_hash).cloned()
+    /// (source_exe, source_title) of the Clip with this content hash — used
+    /// to preserve the original source app when the monitor re-captures
+    /// content ClipFlow itself wrote. Returns only strings: cloning a whole
+    /// Clip here would copy up to 10 MB of image bytes for two fields.
+    pub fn source_by_hash(&self, content_hash: &str) -> Option<(String, String)> {
+        self.clips
+            .iter()
+            .find(|c| c.content_hash == content_hash)
+            .map(|c| (c.source_exe.clone(), c.source_title.clone()))
     }
 
     pub fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<(), String> {
@@ -169,6 +186,41 @@ mod tests {
         let (_, evicted) = h.insert(text_clip("c4", 4), &cfg);
         assert_eq!(evicted, vec!["c2".to_string()]);
         assert!(h.clips.iter().any(|c| c.id == "c1"));
+    }
+
+    #[test]
+    fn source_by_hash_returns_only_source_fields() {
+        let mut h = HistoryStore::new();
+        let cfg = AppConfig::default();
+        let mut c = text_clip("c1", 1);
+        c.source_exe = "Code.exe".to_string();
+        c.source_title = "main.rs".to_string();
+        h.insert(c, &cfg);
+        assert_eq!(
+            h.source_by_hash("hash-c1"),
+            Some(("Code.exe".to_string(), "main.rs".to_string()))
+        );
+        assert_eq!(h.source_by_hash("nope"), None);
+    }
+
+    #[test]
+    fn get_all_for_ipc_strips_image_bytes_but_keeps_order() {
+        let mut h = HistoryStore::new();
+        let cfg = AppConfig::default();
+        let mut c = clip("i1", ClipKind::Image, 1, 100);
+        c.image_data = Some(vec![1u8; 1024]);
+        h.insert(c, &cfg);
+        h.insert(text_clip("t1", 2), &cfg);
+
+        let all = h.get_all_for_ipc();
+        assert_eq!(all.len(), 2);
+        // Display order preserved (newest first).
+        assert_eq!(all[0].id, "t1");
+        assert_eq!(all[1].id, "i1");
+        assert_eq!(all[1].image_data, None);
+
+        // Full get_all keeps the bytes (the persistence dump needs them).
+        assert_eq!(h.get_all()[1].image_data, Some(vec![1u8; 1024]));
     }
 
     #[test]

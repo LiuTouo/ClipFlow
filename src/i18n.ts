@@ -61,6 +61,9 @@ const I18N: Record<string, Record<string, string>> = {
     filesMissingFallback: "來源檔案已不存在，改複製路徑文字",
     pasteFailed: "貼上失敗，請重試（剪貼簿可能被其他程式佔用）",
     copyFailed: "複製失敗，請重試（剪貼簿可能被其他程式佔用）",
+    pinLimitReached: "最多只能釘選 10 則",
+    nothingToUndo: "沒有可復原的刪除",
+    hotkeyInvalid: "無效的快捷鍵格式",
     // About
     aboutTitle: "關於 ClipFlow",
     tagline: "現代、輕量的 Windows 剪貼簿歷史工具。",
@@ -136,6 +139,9 @@ const I18N: Record<string, Record<string, string>> = {
     filesMissingFallback: "Source files no longer exist — copied the path text instead",
     pasteFailed: "Paste failed — please try again (the clipboard may be busy)",
     copyFailed: "Copy failed — please try again (the clipboard may be busy)",
+    pinLimitReached: "Maximum 10 pinned Clips",
+    nothingToUndo: "Nothing to undo",
+    hotkeyInvalid: "Invalid hotkey format",
     // About
     aboutTitle: "About ClipFlow",
     tagline: "A modern, lightweight clipboard history tool for Windows.",
@@ -177,6 +183,17 @@ export function t(key: string, vars?: Record<string, string | number>): string {
     }
   }
   return s;
+}
+
+/** Map a backend error string (a stable frontend/backend protocol, always
+ * English) to a localized message. Unknown strings pass through unchanged. */
+export function localizeBackendError(msg: string): string {
+  if (msg.includes("Maximum") && msg.includes("pinned")) return t("pinLimitReached");
+  if (msg.includes("Nothing to undo")) return t("nothingToUndo");
+  if (msg.includes("Invalid hotkey")) return t("hotkeyInvalid");
+  if (msg.includes("already in use")) return t("hotkeyInUse");
+  if (msg.includes("must include")) return t("hotkeyNeedModifier");
+  return msg;
 }
 
 /** Apply the current language to all [data-i18n] / [data-i18n-placeholder] elements. */

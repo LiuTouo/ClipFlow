@@ -39,6 +39,11 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # when GitHub redirects asset downloads to the CDN (no ACAO header).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
+[dev-dependencies]
+# Guards the plugins.shell.open regex in tauri.conf.json: the shell plugin
+# compiles it at startup and PANICS on an invalid pattern.
+regex = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_System_DataExchange",

@@ -11,6 +11,16 @@ use persistence::Persistence;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+/// Lock a shared-state mutex, recovering from poisoning instead of
+/// panicking. Clipboard state is best-effort: every mutation is a simple
+/// Vec/field update that cannot leave the structure inconsistent, so a
+/// guard poisoned by a panicking caller is safe to recover — panicking
+/// here instead would cascade into the monitor thread (via its own lock
+/// calls) and silently kill clipboard capture.
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 struct AppState {
     history: Arc<Mutex<HistoryStore>>,
     config: Arc<Mutex<AppConfig>>,
@@ -18,6 +28,9 @@ struct AppState {
     last_deleted: Arc<Mutex<Option<Clip>>>,
     persistence: Arc<Mutex<Option<Persistence>>>,
     tray_items: Arc<Mutex<Option<TrayMenuItems>>>,
+    /// Hotkey-registration failure that opened Settings at startup, shown
+    /// inline there (CONTEXT: Hotkey conflict detection).
+    startup_error: Arc<Mutex<Option<String>>>,
 }
 
 /// Handles to the tray menu items, kept so their labels can be re-localized
@@ -62,7 +75,7 @@ fn persist_with<F>(state: &AppState, f: F)
 where
     F: FnOnce(&Persistence),
 {
-    let guard = state.persistence.lock().unwrap();
+    let guard = lock(&state.persistence);
     if let Some(p) = guard.as_ref() {
         let _ = f(p);
     }
@@ -70,8 +83,8 @@ where
 
 #[tauri::command]
 fn get_clips(state: tauri::State<AppState>) -> Vec<Clip> {
-    let history = state.history.lock().unwrap();
-    history.get_all()
+    let history = lock(&state.history);
+    history.get_all_for_ipc()
 }
 
 #[tauri::command]
@@ -79,12 +92,12 @@ fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> 
     // Scoped guards: never hold one state lock while acquiring another —
     // keeps every command on the same lock order as undo_delete.
     let deleted = {
-        let mut history = state.history.lock().unwrap();
+        let mut history = lock(&state.history);
         history.delete(&id)
     };
     if let Some(clip) = deleted {
         let clip_id = clip.id.clone();
-        *state.last_deleted.lock().unwrap() = Some(clip);
+        *lock(&state.last_deleted) = Some(clip);
         persist_with(&state, |p| {
             let _ = p.delete(&clip_id);
         });
@@ -97,7 +110,7 @@ fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> 
 #[tauri::command]
 fn undo_delete(id: String, state: tauri::State<AppState>) -> Result<Clip, String> {
     let clip = {
-        let mut last = state.last_deleted.lock().unwrap();
+        let mut last = lock(&state.last_deleted);
         // Undo is keyed to the deleted Clip's id: only the most recent delete
         // is restorable, and a stale undo request (e.g. from an outdated
         // toast) must not restore some other Clip.
@@ -109,8 +122,8 @@ fn undo_delete(id: String, state: tauri::State<AppState>) -> Result<Clip, String
     };
     if let Some(clip) = clip {
         let (restored, evicted) = {
-            let mut history = state.history.lock().unwrap();
-            let config = state.config.lock().unwrap();
+            let mut history = lock(&state.history);
+            let config = lock(&state.config);
             history.insert(clip, &config)
         };
         persist_with(&state, |p| {
@@ -128,7 +141,7 @@ fn undo_delete(id: String, state: tauri::State<AppState>) -> Result<Clip, String
 #[tauri::command]
 fn set_pinned(id: String, pinned: bool, state: tauri::State<AppState>) -> Result<(), String> {
     {
-        let mut history = state.history.lock().unwrap();
+        let mut history = lock(&state.history);
         history.set_pinned(&id, pinned)?;
     }
     persist_with(&state, |p| {
@@ -139,8 +152,15 @@ fn set_pinned(id: String, pinned: bool, state: tauri::State<AppState>) -> Result
 
 #[tauri::command]
 fn get_config(state: tauri::State<AppState>) -> AppConfig {
-    let config = state.config.lock().unwrap();
+    let config = lock(&state.config);
     config.clone()
+}
+
+/// The hotkey-registration failure that opened Settings at startup, if any.
+/// Taken (read once, then cleared) so the page shows it exactly once.
+#[tauri::command]
+fn take_startup_error(state: tauri::State<AppState>) -> Option<String> {
+    lock(&state.startup_error).take()
 }
 
 /// Undo a hotkey swap so runtime state matches the on-disk config.
@@ -157,13 +177,13 @@ fn rollback_hotkey_swap(app: &tauri::AppHandle, new_hotkey: &str, old_hotkey: &s
 /// the database file, then drop the handle.
 fn apply_persist(state: &AppState, enabled: bool) -> Result<(), String> {
     if enabled {
-        let p = Persistence::open()?;
-        let clips = state.history.lock().unwrap().get_all();
+        let mut p = Persistence::open()?;
+        let clips = lock(&state.history).get_all();
         p.dump(&clips)?;
-        *state.persistence.lock().unwrap() = Some(p);
+        *lock(&state.persistence) = Some(p);
     } else {
         Persistence::delete_file()?;
-        *state.persistence.lock().unwrap() = None;
+        *lock(&state.persistence) = None;
     }
     Ok(())
 }
@@ -177,7 +197,7 @@ fn rollback_persist(state: &AppState, failed_new_value: bool) {
 fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
     let new_config = new_config.sanitized();
     let (old_hotkey, old_startup, old_persist, old_language, old_auto_update) = {
-        let config = state.config.lock().unwrap();
+        let config = lock(&state.config);
         (config.hotkey.clone(), config.startup, config.persist, config.language.clone(), config.auto_update)
     };
     let mut swapped_hotkey = false;
@@ -259,8 +279,8 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
     // 5. Config is on disk — sync cosmetic runtime state (tray menu labels).
     if new_config.language != old_language {
         let labels = tray_labels(&new_config.language);
-        let running = *state.monitor_running.lock().unwrap();
-        let items = state.tray_items.lock().unwrap();
+        let running = *lock(&state.monitor_running);
+        let items = lock(&state.tray_items);
         if let Some(items) = items.as_ref() {
             let _ = items.pause.set_text(if running { labels.pause } else { labels.resume });
             let _ = items.settings.set_text(labels.settings);
@@ -273,7 +293,7 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
     // check now (installed builds only — spawn_auto_update_check re-verifies).
     let auto_update_turned_on = !old_auto_update && new_config.auto_update;
 
-    let mut config = state.config.lock().unwrap();
+    let mut config = lock(&state.config);
     *config = new_config;
     drop(config);
 
@@ -308,7 +328,11 @@ async fn hide_and_paste(app: &tauri::AppHandle) {
         log("[ClipFlow] paste suppressed: foreground is the desktop shell");
         return;
     }
-    clipboard::simulate_ctrl_v();
+    if let Err(e) = clipboard::simulate_ctrl_v() {
+        // Phase-2 failure path per the Paste spec: the content is already
+        // on the clipboard, so the user can still Ctrl+V manually.
+        log(&format!("[ClipFlow] paste simulation failed: {}", e));
+    }
 }
 
 #[tauri::command]
@@ -322,7 +346,7 @@ async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
 /// never cross IPC (see models::Clip::image_data), so paste/copy ask the
 /// backend for the bytes at use time.
 fn image_data_by_id(state: &AppState, id: &str) -> Result<Vec<u8>, String> {
-    let history = state.history.lock().unwrap();
+    let history = lock(&state.history);
     history
         .clips
         .iter()
@@ -364,115 +388,171 @@ fn copy_only_files(text: String) -> Result<String, String> {
     clipboard::write_files_to_clipboard_from_text(&text)
 }
 
-fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>, persistence: Arc<Mutex<Option<Persistence>>>) {
-    std::thread::spawn(move || {
+/// True while `now` is still inside the debounce window of the last capture.
+fn within_debounce(now: u64, last_capture_ts: u64, debounce_ms: u64) -> bool {
+    now.saturating_sub(last_capture_ts) < debounce_ms
+}
+
+/// True when this capture repeats content first observed inside the debounce
+/// window (double Ctrl+C noise). The same content observed AFTER the window
+/// is a deliberate re-copy and must be kept.
+fn is_double_copy(hash: &str, first_seen: u64, last_hash: &Option<(String, u64)>, debounce_ms: u64) -> bool {
+    matches!(last_hash, Some((h, ts)) if *h == hash && within_debounce(first_seen, *ts, debounce_ms))
+}
+
+/// Track when the CURRENT pending clipboard change was first observed. A new
+/// sequence number resets the clock: otherwise the double-copy comparison
+/// runs against the first sighting of older, since-replaced content and can
+/// misread a deliberate re-copy as double-copy noise. Returns the updated
+/// (pending_seq, pending_since) plus the first-observation time to use.
+fn track_first_seen(
+    pending_seq: Option<u32>,
+    pending_since: Option<u64>,
+    current_seq: u32,
+    now: u64,
+) -> (Option<u32>, Option<u64>, u64) {
+    match (pending_seq, pending_since) {
+        (Some(s), Some(t)) if s == current_seq => (pending_seq, pending_since, t),
+        _ => (Some(current_seq), Some(now), now),
+    }
+}
+
+/// Clipboard monitor state. One instance lives on the monitor thread for the
+/// lifetime of the app; `tick` runs one poll iteration.
+struct Monitor {
+    app: tauri::AppHandle,
+    history: Arc<Mutex<HistoryStore>>,
+    config: Arc<Mutex<AppConfig>>,
+    running: Arc<Mutex<bool>>,
+    persistence: Arc<Mutex<Option<Persistence>>>,
+    /// Own exe name, so content ClipFlow itself wrote (paste / copy-only
+    /// while the Panel had focus) keeps its original source attribution.
+    self_exe: String,
+    last_seq: u32,
+    last_hash: Option<(String, u64)>,
+    /// First-observation time + sequence number of the unconsumed clipboard
+    /// change, used for debounce comparisons (see tick's capture match).
+    pending_since: Option<u64>,
+    pending_seq: Option<u32>,
+}
+
+impl Monitor {
+    fn tick(&mut self) {
         use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 
-        let mut last_seq: u32 = 0;
-        let mut last_hash: Option<(String, u64)> = None;
-        // First-observation time of an unconsumed clipboard change, used for
-        // debounce comparisons (see the capture match below).
-        let mut pending_since: Option<u64> = None;
-        // Own exe name, so content ClipFlow itself wrote (paste / copy-only
-        // while the Panel had focus) keeps its original source attribution.
-        let self_exe = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-            .unwrap_or_default();
+        let current_seq = unsafe { GetClipboardSequenceNumber() };
+
+        {
+            let running = lock(&self.running);
+            if !*running {
+                // Keep last_seq in sync while paused: copies made during
+                // the pause are permanently lost, not captured on resume.
+                self.last_seq = current_seq;
+                self.pending_since = None;
+                self.pending_seq = None;
+                return;
+            }
+        }
+
+        if current_seq == self.last_seq {
+            return;
+        }
+
+        let config = lock(&self.config).clone();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let (pending_seq, pending_since, first_seen) =
+            track_first_seen(self.pending_seq, self.pending_since, current_seq, now);
+        self.pending_seq = pending_seq;
+        self.pending_since = pending_since;
+
+        // Debounce: too soon after the last capture. Do NOT consume the
+        // sequence number — the next poll retries and picks up the latest
+        // content once the window has passed.
+        if let Some((_, ts)) = self.last_hash {
+            if within_debounce(now, ts, config.debounce_ms) {
+                return;
+            }
+        }
+
+        // The sequence number is only consumed on success or definitive
+        // failure (Skip). A Locked clipboard stays pending for next poll,
+        // so copies made while another app holds the clipboard are not lost.
+        match clipboard::capture_clipboard(&config) {
+            Ok(mut clip) => {
+                self.last_seq = current_seq;
+                self.pending_since = None;
+                self.pending_seq = None;
+                let content_hash = clip.content_hash.clone();
+
+                if is_double_copy(&content_hash, first_seen, &self.last_hash, config.debounce_ms) {
+                    return;
+                }
+                self.last_hash = Some((content_hash.clone(), now));
+
+                if !self.self_exe.is_empty() && clip.source_exe.eq_ignore_ascii_case(&self.self_exe) {
+                    if let Some((exe, title)) = lock(&self.history).source_by_hash(&content_hash) {
+                        clip.source_exe = exe;
+                        clip.source_title = title;
+                    }
+                }
+
+                let (clip, evicted) = {
+                    let mut history = lock(&self.history);
+                    history.insert(clip, &config)
+                };
+                {
+                    let guard = lock(&self.persistence);
+                    if let Some(p) = guard.as_ref() {
+                        let _ = p.upsert_capture(&clip);
+                        for id in &evicted {
+                            let _ = p.delete(id);
+                        }
+                    }
+                }
+                let _ = self.app.emit("clipboard-update", ClipboardUpdate { clip, evicted });
+            }
+            Err(clipboard::CaptureError::Locked) => {}
+            Err(clipboard::CaptureError::Skip(reason)) => {
+                log(&format!("[ClipFlow] capture skipped: {}", reason));
+                self.last_seq = current_seq;
+                self.pending_since = None;
+                self.pending_seq = None;
+            }
+        }
+    }
+}
+
+fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>, persistence: Arc<Mutex<Option<Persistence>>>) {
+    std::thread::spawn(move || {
+        let mut monitor = Monitor {
+            app: app_handle,
+            history,
+            config,
+            running: monitor_running,
+            persistence,
+            self_exe: std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_default(),
+            last_seq: 0,
+            last_hash: None,
+            pending_since: None,
+            pending_seq: None,
+        };
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(200));
-
-            let current_seq = unsafe { GetClipboardSequenceNumber() };
-
-            {
-                let running = monitor_running.lock().unwrap();
-                if !*running {
-                    // Keep last_seq in sync while paused: copies made during
-                    // the pause are permanently lost, not captured on resume.
-                    last_seq = current_seq;
-                    pending_since = None;
-                    continue;
-                }
-            }
-
-            if current_seq == last_seq {
-                continue;
-            }
-
-            let config = config.lock().unwrap().clone();
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-
-            // When this clipboard change was FIRST observed. Debounce
-            // comparisons use this, not the (later) capture time — polling
-            // quantizes observation to the 200ms poll interval.
-            let first_seen = *pending_since.get_or_insert(now);
-
-            // Debounce: too soon after the last capture. Do NOT consume the
-            // sequence number — the next poll retries and picks up the latest
-            // content once the window has passed.
-            if let Some((ref _hash, ts)) = last_hash {
-                if now - ts < config.debounce_ms {
-                    continue;
-                }
-            }
-
-            // The sequence number is only consumed on success or definitive
-            // failure (Skip). A Locked clipboard stays pending for next poll,
-            // so copies made while another app holds the clipboard are not lost.
-            match clipboard::capture_clipboard(&config) {
-                Ok(mut clip) => {
-                    last_seq = current_seq;
-                    pending_since = None;
-                    let content_hash = clip.content_hash.clone();
-
-                    // Same content first observed inside the debounce window:
-                    // double-copy noise, drop it silently. The same content
-                    // observed AFTER the window is a deliberate re-copy — fall
-                    // through so insert() refreshes captured_at/source and
-                    // moves the Clip to the top of history.
-                    if let Some((ref hash, ts)) = last_hash {
-                        if *hash == content_hash
-                            && first_seen.saturating_sub(ts) < config.debounce_ms
-                        {
-                            continue;
-                        }
-                    }
-                    last_hash = Some((content_hash.clone(), now));
-
-                    if !self_exe.is_empty() && clip.source_exe.eq_ignore_ascii_case(&self_exe) {
-                        if let Some(existing) = history.lock().unwrap().find_by_hash(&content_hash) {
-                            clip.source_exe = existing.source_exe;
-                            clip.source_title = existing.source_title;
-                        }
-                    }
-
-                    let (clip, evicted) = {
-                        let mut history = history.lock().unwrap();
-                        history.insert(clip, &config)
-                    };
-                    {
-                        let guard = persistence.lock().unwrap();
-                        if let Some(p) = guard.as_ref() {
-                            let _ = p.upsert_capture(&clip);
-                            for id in &evicted {
-                                let _ = p.delete(id);
-                            }
-                        }
-                    }
-                    let _ = app_handle.emit("clipboard-update", ClipboardUpdate { clip, evicted });
-                }
-                Err(clipboard::CaptureError::Locked) => continue,
-                Err(clipboard::CaptureError::Skip(reason)) => {
-                    log(&format!("[ClipFlow] capture skipped: {}", reason));
-                    last_seq = current_seq;
-                    pending_since = None;
-                    continue;
-                }
+            // A panicking iteration must not kill clipboard monitoring:
+            // untrusted clipboard bytes reach the image decoders, and a dead
+            // monitor thread fails silently — the user never notices history
+            // has stopped. Log and keep polling.
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| monitor.tick())).is_err() {
+                log("[ClipFlow] monitor iteration panicked; clipboard watching continues");
             }
         }
     });
@@ -592,6 +672,7 @@ fn register_panel_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> Result<(),
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(_hidden: bool) {
+    update::cleanup_stale_portable_update();
     let config = AppConfig::load();
     let mut history_store = HistoryStore::new();
 
@@ -624,6 +705,7 @@ pub fn run(_hidden: bool) {
     let last_deleted = Arc::new(Mutex::new(None));
     let persistence = Arc::new(Mutex::new(persistence));
     let tray_items = Arc::new(Mutex::new(None));
+    let startup_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     log("[ClipFlow] run() called");
 
@@ -638,6 +720,7 @@ pub fn run(_hidden: bool) {
             last_deleted: last_deleted.clone(),
             persistence: persistence.clone(),
             tray_items: tray_items.clone(),
+            startup_error: startup_error.clone(),
         })
         .setup(move |app| {
             let resource_dir = app.path().resource_dir().unwrap_or_default();
@@ -648,13 +731,15 @@ pub fn run(_hidden: bool) {
             log("[ClipFlow] registering hotkey");
             // Register global hotkey
             let hotkey_str = {
-                let config = config_store.lock().unwrap();
+                let config = lock(&config_store);
                 config.hotkey.clone()
             };
 
             if let Err(e) = register_panel_hotkey(&handle, &hotkey_str) {
                 log(&format!("[ClipFlow] hotkey registration failed: {}", e));
-                // Per spec: on conflict, open Settings so the user picks another combination.
+                // Per spec: on conflict, open Settings so the user picks
+                // another combination — with the reason shown inline.
+                *lock(&startup_error) = Some(e);
                 let _ = open_settings_window(&handle);
             }
 
@@ -686,7 +771,7 @@ pub fn run(_hidden: bool) {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
             use tauri::tray::TrayIconBuilder;
 
-            let tray_lang = config_store.lock().unwrap().language.clone();
+            let tray_lang = lock(&config_store).language.clone();
             let labels = tray_labels(&tray_lang);
 
             let pause_item = MenuItemBuilder::with_id("pause", labels.pause).build(app)?;
@@ -714,9 +799,9 @@ pub fn run(_hidden: bool) {
                     match event.id().as_ref() {
                         "pause" => {
                             let state = app.state::<AppState>();
-                            let mut running = state.monitor_running.lock().unwrap();
+                            let mut running = lock(&state.monitor_running);
                             *running = !*running;
-                            let lang = state.config.lock().unwrap().language.clone();
+                            let lang = lock(&state.config).language.clone();
                             let labels = tray_labels(&lang);
                             let _ = pause_item_handle.set_text(if *running {
                                 labels.pause
@@ -740,7 +825,7 @@ pub fn run(_hidden: bool) {
             log("[ClipFlow] tray built successfully");
 
             // Keep item handles so labels can be re-localized on language change.
-            *tray_items.lock().unwrap() = Some(TrayMenuItems {
+            *lock(&tray_items) = Some(TrayMenuItems {
                 pause: pause_item.clone(),
                 settings: settings_item.clone(),
                 about: about_item.clone(),
@@ -755,6 +840,7 @@ pub fn run(_hidden: bool) {
             undo_delete,
             set_pinned,
             get_config,
+            take_startup_error,
             update_config,
             paste_text,
             paste_image,
@@ -823,4 +909,98 @@ fn open_about_dialog(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
         .build()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod shell_open_scope_tests {
+    /// tauri-plugin-shell compiles plugins.shell.open at startup wrapped as
+    /// ^{pattern}$ and panics on an invalid regex — guard the config here.
+    #[test]
+    fn shell_open_regex_compiles_and_scopes_correctly() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let pattern = conf["plugins"]["shell"]["open"]
+            .as_str()
+            .expect("plugins.shell.open must be set");
+        let re = regex::Regex::new(&format!("^{pattern}$")).unwrap();
+
+        // About-page links and the open-folder button must keep working.
+        assert!(re.is_match("https://github.com/LiuTouo/ClipFlow"));
+        assert!(re.is_match("C:\\Users\\me\\AppData\\Local\\ClipFlow"));
+        assert!(re.is_match("D:/portable/ClipFlow"));
+
+        // Everything else must be rejected by the webview surface.
+        for bad in [
+            "http://github.com/x",
+            "javascript:alert(1)",
+            "file:///C:/Windows",
+            "mailto:a@b.c",
+            "\\\\server\\share\\x",
+        ] {
+            assert!(!re.is_match(bad), "should reject: {bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod monitor_debounce_tests {
+    use super::{is_double_copy, track_first_seen, within_debounce};
+
+    #[test]
+    fn within_debounce_window() {
+        assert!(within_debounce(150, 0, 200));
+        // Boundary: exactly debounce_ms later is OUTSIDE the window.
+        assert!(!within_debounce(200, 0, 200));
+        assert!(!within_debounce(500, 0, 200));
+    }
+
+    #[test]
+    fn double_copy_inside_window_is_dropped() {
+        let last = Some(("hashA".to_string(), 0u64));
+        assert!(is_double_copy("hashA", 150, &last, 200));
+    }
+
+    #[test]
+    fn same_content_after_window_is_a_deliberate_recopy() {
+        let last = Some(("hashA".to_string(), 0u64));
+        assert!(!is_double_copy("hashA", 300, &last, 200));
+    }
+
+    #[test]
+    fn different_content_is_never_double_copy() {
+        let last = Some(("hashA".to_string(), 0u64));
+        assert!(!is_double_copy("hashB", 50, &last, 200));
+    }
+
+    #[test]
+    fn no_previous_capture_is_never_double_copy() {
+        assert!(!is_double_copy("hashA", 50, &None, 200));
+    }
+
+    #[test]
+    fn first_seen_persists_while_the_same_sequence_is_pending() {
+        // Second poll of the same pending change keeps the original time.
+        let (seq, since, first) = track_first_seen(Some(7), Some(1000), 7, 1200);
+        assert_eq!(seq, Some(7));
+        assert_eq!(since, Some(1000));
+        assert_eq!(first, 1000);
+    }
+
+    #[test]
+    fn first_seen_resets_when_a_newer_sequence_arrives() {
+        // Copy B replaced copy A while A was still pending: the debounce
+        // clock must run from B's first observation, not A's.
+        let (seq, since, first) = track_first_seen(Some(7), Some(1000), 8, 1200);
+        assert_eq!(seq, Some(8));
+        assert_eq!(since, Some(1200));
+        assert_eq!(first, 1200);
+    }
+
+    #[test]
+    fn first_seen_starts_on_first_observation() {
+        let (seq, since, first) = track_first_seen(None, None, 7, 1000);
+        assert_eq!(seq, Some(7));
+        assert_eq!(since, Some(1000));
+        assert_eq!(first, 1000);
+    }
 }

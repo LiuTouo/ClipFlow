@@ -851,7 +851,11 @@ pub fn write_files_to_clipboard_from_text(text: &str) -> Result<String, String> 
 /// Shift from the Ctrl+Shift+V hotkey): otherwise the target app reads the
 /// stroke as Ctrl+Shift+V — "paste special" in Office, ignored elsewhere —
 /// which looks exactly like "paste doesn't work".
-pub fn simulate_ctrl_v() {
+/// Returns Err when the keystroke could not be injected at all (UIPI blocks
+/// input into elevated target apps from a non-elevated ClipFlow) so the
+/// caller can at least log it — the content stays on the clipboard either
+/// way, for a manual Ctrl+V.
+pub fn simulate_ctrl_v() -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
         KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
@@ -884,10 +888,14 @@ pub fn simulate_ctrl_v() {
         seq.push(input(VIRTUAL_KEY(0x56), false)); // V down
         seq.push(input(VIRTUAL_KEY(0x56), true));  // V up
         seq.push(input(VK_CONTROL, true));
-        SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
+        let sent = SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
+        if sent as usize != seq.len() {
+            return Err("Ctrl+V injection blocked (the target app may be running as administrator)".to_string());
+        }
 
         // Restore modifiers the user is still physically holding so their
-        // key state matches reality again.
+        // key state matches reality again. Best-effort: a failed restore
+        // only means a stuck modifier until the user's next real keypress.
         let mut restore = Vec::new();
         if shift_held && held(VK_SHIFT.0) { restore.push(input(VK_SHIFT, false)); }
         if alt_held && held(VK_MENU.0) { restore.push(input(VK_MENU, false)); }
@@ -895,6 +903,7 @@ pub fn simulate_ctrl_v() {
         if !restore.is_empty() {
             SendInput(&restore, std::mem::size_of::<INPUT>() as i32);
         }
+        Ok(())
     }
 }
 

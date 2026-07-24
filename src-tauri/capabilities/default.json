@@ -11,11 +11,6 @@
     "core:window:allow-show",
     "core:event:default",
     "core:event:allow-listen",
-    "core:event:allow-emit",
-    "global-shortcut:default",
-    "global-shortcut:allow-register",
-    "global-shortcut:allow-unregister",
-    "global-shortcut:allow-is-registered",
     "shell:default",
     "shell:allow-open"
   ]
