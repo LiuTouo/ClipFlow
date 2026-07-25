@@ -96,6 +96,18 @@ impl HistoryStore {
         });
     }
 
+    /// Raw image bytes for an Image Clip, checked by kind: a Text/File id
+    /// gets "not an image" instead of a misleading "not found".
+    pub fn get_clip_image(&self, id: &str) -> Result<Vec<u8>, String> {
+        match self.clips.iter().find(|c| c.id == id) {
+            Some(c) if c.kind == ClipKind::Image => {
+                c.image_data.clone().ok_or_else(|| "Image data missing".to_string())
+            }
+            Some(_) => Err("Clip is not an image".to_string()),
+            None => Err("Clip not found".to_string()),
+        }
+    }
+
     pub fn delete(&mut self, id: &str) -> Option<Clip> {
         if let Some(pos) = self.clips.iter().position(|c| c.id == id) {
             Some(self.clips.remove(pos))
@@ -221,6 +233,20 @@ mod tests {
 
         // Full get_all keeps the bytes (the persistence dump needs them).
         assert_eq!(h.get_all()[1].image_data, Some(vec![1u8; 1024]));
+    }
+
+    #[test]
+    fn get_clip_image_distinguishes_missing_wrong_kind_and_ok() {
+        let mut h = HistoryStore::new();
+        let cfg = AppConfig::default();
+        let mut img = clip("i1", ClipKind::Image, 1, 4);
+        img.image_data = Some(vec![1u8; 4]);
+        h.insert(img, &cfg);
+        h.insert(text_clip("t1", 2), &cfg);
+
+        assert_eq!(h.get_clip_image("i1").unwrap(), vec![1u8; 4]);
+        assert_eq!(h.get_clip_image("t1").unwrap_err(), "Clip is not an image");
+        assert_eq!(h.get_clip_image("nope").unwrap_err(), "Clip not found");
     }
 
     #[test]

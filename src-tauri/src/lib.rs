@@ -346,13 +346,7 @@ async fn paste_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
 /// never cross IPC (see models::Clip::image_data), so paste/copy ask the
 /// backend for the bytes at use time.
 fn image_data_by_id(state: &AppState, id: &str) -> Result<Vec<u8>, String> {
-    let history = lock(&state.history);
-    history
-        .clips
-        .iter()
-        .find(|c| c.id == id)
-        .and_then(|c| c.image_data.clone())
-        .ok_or_else(|| "Clip not found".to_string())
+    lock(&state.history).get_clip_image(id)
 }
 
 #[tauri::command]

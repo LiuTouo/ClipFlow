@@ -52,7 +52,8 @@ async function refreshConfig() {
     vimMode = !!config.vim_mode;
     pasteFilesAsFiles = config.paste_files_as_files !== false;
     applyTheme(config.theme || "system");
-  } catch (_) {
+  } catch (err) {
+    console.error("Failed to load config:", err);
     setLanguage("zh-TW");
   }
 }
