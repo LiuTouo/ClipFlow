@@ -1,8 +1,11 @@
 use crate::models::{AppConfig, Clip, ClipKind};
 use sha2::{Digest, Sha256};
-use windows::Win32::Foundation::{HANDLE, HWND};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     OpenClipboard, CloseClipboard, GetClipboardData, EmptyClipboard, SetClipboardData,
+};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
 
 const CF_DIB: u32 = 8;
@@ -17,22 +20,6 @@ pub enum CaptureError {
     Locked,
     Skip(String),
 }
-
-// Raw kernel32 memory functions — HANDLE.0 is isize
-extern "system" {
-    fn GlobalSize(hMem: isize) -> usize;
-    fn GlobalLock(hMem: isize) -> *mut std::ffi::c_void;
-    fn GlobalUnlock(hMem: isize) -> i32;
-    fn GlobalAlloc(uFlags: u32, dwBytes: usize) -> isize;
-    fn GlobalFree(hMem: isize) -> isize;
-}
-
-// Helper: GetClipboardData returns HANDLE, HANDLE.0 is *mut c_void
-unsafe fn global_size(h: HANDLE) -> usize { GlobalSize(h.0 as isize) }
-unsafe fn global_lock(h: HANDLE) -> *mut std::ffi::c_void { GlobalLock(h.0 as isize) }
-unsafe fn global_unlock(h: HANDLE) -> i32 { GlobalUnlock(h.0 as isize) }
-unsafe fn global_alloc(flags: u32, bytes: usize) -> isize { GlobalAlloc(flags, bytes) }
-unsafe fn global_free(h: isize) { GlobalFree(h); }
 
 pub fn hash_content(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -101,25 +88,25 @@ fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, n
         // (a GDI object handle), not an HGLOBAL memory block, so it cannot be
         // read through GlobalSize/GlobalLock.
         let handle = match GetClipboardData(CF_DIB) {
-            Ok(h) => h,
+            Ok(h) => HGLOBAL(h.0),
             Err(_) => {
                 let _ = CloseClipboard();
                 return Err(CaptureError::Skip("No DIB image on clipboard".to_string()));
             }
         };
 
-        let mem_size = global_size(handle);
+        let mem_size = GlobalSize(handle);
         if mem_size == 0 {
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("Empty image data".to_string()));
         }
-        let ptr = global_lock(handle);
+        let ptr = GlobalLock(handle);
         if ptr.is_null() {
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("Cannot lock image data".to_string()));
         }
         let dib_data = std::slice::from_raw_parts(ptr as *const u8, mem_size).to_vec();
-        global_unlock(handle);
+        let _ = GlobalUnlock(handle);
         let _ = CloseClipboard();
 
         // Enforce the per-image size limit: oversized images are downscaled
@@ -167,18 +154,18 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
         }
 
         let handle = match GetClipboardData(CF_HDROP) {
-            Ok(h) => h,
+            Ok(h) => HGLOBAL(h.0),
             Err(_) => {
                 let _ = CloseClipboard();
                 return Err(CaptureError::Skip("No HDROP".to_string()));
             }
         };
-        let mem_size = global_size(handle);
+        let mem_size = GlobalSize(handle);
         if mem_size < std::mem::size_of::<DROPFILES>() {
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("HDROP data too small".to_string()));
         }
-        let ptr = global_lock(handle);
+        let ptr = GlobalLock(handle);
         if ptr.is_null() {
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("Cannot lock HDROP data".to_string()));
@@ -187,13 +174,13 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
         // ANSI (fWide == 0) path lists come from legacy apps; skip instead
         // of decoding single-byte text as UTF-16 garbage.
         if dropfiles.fWide.0 == 0 {
-            global_unlock(handle);
+            let _ = GlobalUnlock(handle);
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("ANSI HDROP not supported".to_string()));
         }
         let file_offset = dropfiles.pFiles as usize;
         if file_offset >= mem_size {
-            global_unlock(handle);
+            let _ = GlobalUnlock(handle);
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("Bad HDROP offset".to_string()));
         }
@@ -218,7 +205,7 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
             pos = pp as usize + 2; // skip this entry's NUL terminator
         }
 
-        global_unlock(handle);
+        let _ = GlobalUnlock(handle);
         let _ = CloseClipboard();
 
         let file_list = files.join(";");
@@ -268,14 +255,14 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
         // loop below decodes UTF-16, and virtually every modern app puts
         // CF_UNICODETEXT on the clipboard. Skipping is better than mojibake.
         let handle = match GetClipboardData(CF_UNICODETEXT) {
-            Ok(h) => h,
+            Ok(h) => HGLOBAL(h.0),
             Err(_) => {
                 let _ = CloseClipboard();
                 return Err(CaptureError::Skip("No text".to_string()));
             }
         };
 
-        let ptr = global_lock(handle);
+        let ptr = GlobalLock(handle);
         if ptr.is_null() {
             let _ = CloseClipboard();
             return Err(CaptureError::Skip("Cannot lock text data".to_string()));
@@ -283,7 +270,7 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
         // Scan for the NUL terminator but never past the allocation: a
         // clipboard owner is not required to terminate, and reading past
         // the block is UB. Unterminated data is taken whole.
-        let max_units = global_size(handle) / 2;
+        let max_units = GlobalSize(handle) / 2;
         let mut chars = Vec::new();
         let mut p = ptr as *const u16;
         for _ in 0..max_units {
@@ -293,7 +280,7 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
             p = p.add(1);
         }
 
-        global_unlock(handle);
+        let _ = GlobalUnlock(handle);
         let _ = CloseClipboard();
 
         let text = String::from_utf16_lossy(&chars);
@@ -700,20 +687,19 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
     unsafe {
         let wide: Vec<u16> = OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect();
         let bytes = wide.len() * 2;
-        let hmem = global_alloc(0x0002, bytes);
-        if hmem == 0 { return Err("Alloc failed".to_string()); }
+        let hmem = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|_| "Alloc failed".to_string())?;
         let ptr = GlobalLock(hmem);
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
-        GlobalUnlock(hmem);
+        let _ = GlobalUnlock(hmem);
 
         if let Err(e) = open_clipboard_retry() {
-            global_free(hmem);
+            let _ = GlobalFree(hmem);
             return Err(e);
         }
         let _ = EmptyClipboard();
-        if SetClipboardData(CF_UNICODETEXT, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
+        if SetClipboardData(CF_UNICODETEXT, HANDLE(hmem.0)).is_err() {
             // SetClipboardData failed: ownership never transferred, free it.
-            global_free(hmem);
+            let _ = GlobalFree(hmem);
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
@@ -724,19 +710,18 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
 
 pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
     unsafe {
-        let hmem = GlobalAlloc(0x0002, data.len());
-        if hmem == 0 { return Err("Alloc failed".to_string()); }
+        let hmem = GlobalAlloc(GMEM_MOVEABLE, data.len()).map_err(|_| "Alloc failed".to_string())?;
         let ptr = GlobalLock(hmem);
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
-        GlobalUnlock(hmem);
+        let _ = GlobalUnlock(hmem);
 
         if let Err(e) = open_clipboard_retry() {
-            global_free(hmem);
+            let _ = GlobalFree(hmem);
             return Err(e);
         }
         let _ = EmptyClipboard();
-        if SetClipboardData(CF_DIB, HANDLE(hmem as *mut std::ffi::c_void)).is_err() {
-            global_free(hmem);
+        if SetClipboardData(CF_DIB, HANDLE(hmem.0)).is_err() {
+            let _ = GlobalFree(hmem);
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
@@ -770,8 +755,7 @@ pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
 
         let header_size = std::mem::size_of::<DROPFILES>();
         let total = header_size + wide.len() * 2;
-        let hdrop = global_alloc(0x0002, total);
-        if hdrop == 0 { return Err("Alloc failed".to_string()); }
+        let hdrop = GlobalAlloc(GMEM_MOVEABLE, total).map_err(|_| "Alloc failed".to_string())?;
 
         let header = DROPFILES {
             pFiles: header_size as u32,
@@ -786,36 +770,38 @@ pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
             (ptr as *mut u8).add(header_size) as *mut u16,
             wide.len(),
         );
-        GlobalUnlock(hdrop);
+        let _ = GlobalUnlock(hdrop);
 
         // Companion text: paths joined with \r\n (Windows text convention).
         let text = paths.join("\r\n");
         let wide_text: Vec<u16> = OsStr::new(&text).encode_wide().chain(std::iter::once(0)).collect();
-        let htext = global_alloc(0x0002, wide_text.len() * 2);
-        if htext == 0 {
-            global_free(hdrop);
-            return Err("Alloc failed".to_string());
-        }
+        let htext = match GlobalAlloc(GMEM_MOVEABLE, wide_text.len() * 2) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = GlobalFree(hdrop);
+                return Err("Alloc failed".to_string());
+            }
+        };
         let tptr = GlobalLock(htext);
         std::ptr::copy_nonoverlapping(wide_text.as_ptr(), tptr as *mut u16, wide_text.len());
-        GlobalUnlock(htext);
+        let _ = GlobalUnlock(htext);
 
         if let Err(e) = open_clipboard_retry() {
-            global_free(hdrop);
-            global_free(htext);
+            let _ = GlobalFree(hdrop);
+            let _ = GlobalFree(htext);
             return Err(e);
         }
         let _ = EmptyClipboard();
-        if SetClipboardData(CF_HDROP, HANDLE(hdrop as *mut std::ffi::c_void)).is_err() {
+        if SetClipboardData(CF_HDROP, HANDLE(hdrop.0)).is_err() {
             // SetClipboardData failed: ownership never transferred, free both.
-            global_free(hdrop);
-            global_free(htext);
+            let _ = GlobalFree(hdrop);
+            let _ = GlobalFree(htext);
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
         // hdrop is now system-owned; only htext can still fail.
-        if SetClipboardData(CF_UNICODETEXT, HANDLE(htext as *mut std::ffi::c_void)).is_err() {
-            global_free(htext);
+        if SetClipboardData(CF_UNICODETEXT, HANDLE(htext.0)).is_err() {
+            let _ = GlobalFree(htext);
             let _ = CloseClipboard();
             return Err("SetClipboardData failed".to_string());
         }
