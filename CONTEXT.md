@@ -83,7 +83,9 @@ The floating WebView window that displays the History. Created on first invocati
 - Click the main row body → Paste the Clip into the previous application, then close the Panel.
 - Click a side action button (📌 Pin, 🗑 Delete, 📋 Copy-only) → perform that single action, leave the Panel open. These do not dismiss.
 
-While the Panel is open, new clipboard captures from the ClipboardMonitor still arrive in real time. The list updates without scrolling to the top, preserving the user's current scroll position.
+**Every open starts from the top:** the search box is cleared, the first Clip is selected, and the list is scrolled to `scrollTop: 0`. The previous session's scroll position, selection, and search query are discarded on close.
+
+While the Panel is open, new clipboard captures from the ClipboardMonitor still arrive in real time. The list updates without scrolling to the top, preserving the user's current scroll position. Delete, pin, and other in-session actions likewise preserve scroll position — only a close/reopen resets to the top.
 
 ### Search
 Case-insensitive substring matching against Clip preview text, source app name, and source window title. Input in the search box filters the Clip list in real time. No fuzzy matching. No typo tolerance. Zero additional dependencies.

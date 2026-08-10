@@ -68,6 +68,7 @@ async function init() {
   applyI18n();
 
   clips = await invoke("get_clips");
+  selectedIndex = 0;
   render();
 
   // The Panel is reused via hide/show — re-apply the config every time it
@@ -76,7 +77,10 @@ async function init() {
     if (focused) {
       refreshConfig().then(() => {
         applyI18n();
+        searchInput.value = "";
+        selectedIndex = 0;
         render();
+        clipList.scrollTop = 0;
       });
     }
   });
