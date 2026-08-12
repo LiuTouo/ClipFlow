@@ -4,6 +4,20 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.5.0] - 2026-08-12
+
+### Added
+
+- 歷史面板新增「全部、文字、圖片、檔案、連結」類型過濾器，可與搜尋條件交集使用，並支援鍵盤方向鍵操作
+- 新增「記住歷史記錄過濾器」設定，可在應用程式執行期間保留上次選擇的類型
+- 內嵌 IBM Plex Sans TC 字型，無需連線即可提供一致的中英文介面字型
+
+### Changed
+
+- 重新設計歷史面板與設定頁視覺，包括卡片式設定區塊、切換開關、操作圖示與刪除選單
+- 歷史面板改為在滑鼠游標所在螢幕中央開啟，改善多螢幕使用體驗
+- 刪除操作移至每筆記錄的更多選單，釘選與僅複製操作維持直接存取
+
 ## [0.4.9] - 2026-08-10
 
 ### Changed
@@ -177,6 +191,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.5.0]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.9...v0.5.0
 [0.4.9]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.6...v0.4.7

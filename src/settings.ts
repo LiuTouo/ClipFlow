@@ -19,6 +19,7 @@ interface AppConfig {
   language: string;
   paste_files_as_files: boolean;
   auto_update: boolean;
+  remember_history_filter: boolean;
 }
 
 let config: AppConfig;
@@ -53,6 +54,7 @@ function populateForm() {
   (document.getElementById("setting-vim-mode") as HTMLInputElement).checked = config.vim_mode;
   (document.getElementById("setting-paste-files-as-files") as HTMLInputElement).checked = config.paste_files_as_files;
   (document.getElementById("setting-auto-update") as HTMLInputElement).checked = config.auto_update;
+  (document.getElementById("setting-remember-history-filter") as HTMLInputElement).checked = config.remember_history_filter;
   (document.getElementById("setting-debounce") as HTMLInputElement).value = String(config.debounce_ms);
   (document.getElementById("setting-theme") as HTMLSelectElement).value = config.theme;
   (document.getElementById("setting-language") as HTMLSelectElement).value = config.language || "zh-TW";
@@ -99,6 +101,7 @@ function bindEvents() {
     config.vim_mode = (document.getElementById("setting-vim-mode") as HTMLInputElement).checked;
     config.paste_files_as_files = (document.getElementById("setting-paste-files-as-files") as HTMLInputElement).checked;
     config.auto_update = (document.getElementById("setting-auto-update") as HTMLInputElement).checked;
+    config.remember_history_filter = (document.getElementById("setting-remember-history-filter") as HTMLInputElement).checked;
     config.debounce_ms = Number((document.getElementById("setting-debounce") as HTMLInputElement).value);
     config.theme = (document.getElementById("setting-theme") as HTMLSelectElement).value;
     config.language = (document.getElementById("setting-language") as HTMLSelectElement).value;

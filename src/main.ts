@@ -26,6 +26,8 @@ interface ClipboardUpdate {
   evicted: string[];
 }
 
+type FilterKind = "all" | "text" | "image" | "files" | "links";
+
 let clips: Clip[] = [];
 // The search-filtered view of clips, in display order. Keyboard selection
 // indexes into this — never into `clips` directly, or search + Enter pastes
@@ -34,23 +36,62 @@ let visibleClips: Clip[] = [];
 let selectedIndex = -1;
 let vimMode = false;
 let pasteFilesAsFiles = true;
+let rememberHistoryFilter = false;
+let activeFilter: FilterKind = "all";
+let openMenuClipId: string | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
+const filterBar = document.getElementById("filter-bar")!;
 const clipList = document.getElementById("clip-list")!;
 const emptyState = document.getElementById("empty-state")!;
 const emptyTitle = document.getElementById("empty-title")!;
 const emptyHint = document.getElementById("empty-hint")!;
 const toast = document.getElementById("toast")!;
+const actionMenu = document.getElementById("clip-action-menu")!;
+
+// === Link classification ===
+/** True when text_content is trimmed to a single valid http/https URL. */
+function isLink(text: string | null): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Classify a Clip for filter matching. */
+function classifyClip(clip: Clip): FilterKind {
+  if (clip.kind === "Image") return "image";
+  if (clip.kind === "FilePaths") return "files";
+  if (isLink(clip.text_content)) return "links";
+  return "text";
+}
+
+/** Does this Clip pass the active filter? */
+function matchesFilter(clip: Clip, filter: FilterKind): boolean {
+  if (filter === "all") return true;
+  return classifyClip(clip) === filter;
+}
 
 // === Init ===
-/** Pull the live config into the page: language, vim mode, theme. */
+/** Pull the live config into the page: language, vim mode, theme, filter pref. */
 async function refreshConfig() {
   try {
-    const config = await invoke<{ language?: string; vim_mode?: boolean; theme?: string; paste_files_as_files?: boolean }>("get_config");
+    const config = await invoke<{
+      language?: string;
+      vim_mode?: boolean;
+      theme?: string;
+      paste_files_as_files?: boolean;
+      remember_history_filter?: boolean;
+    }>("get_config");
     setLanguage(config.language || "zh-TW");
     vimMode = !!config.vim_mode;
     pasteFilesAsFiles = config.paste_files_as_files !== false;
+    rememberHistoryFilter = !!config.remember_history_filter;
     applyTheme(config.theme || "system");
   } catch (err) {
     console.error("Failed to load config:", err);
@@ -79,6 +120,11 @@ async function init() {
         applyI18n();
         searchInput.value = "";
         selectedIndex = 0;
+        openMenuClipId = null;
+        hideActionMenu();
+        if (!rememberHistoryFilter) {
+          activeFilter = "all";
+        }
         render();
         clipList.scrollTop = 0;
       });
@@ -105,10 +151,33 @@ async function init() {
   });
 }
 
+// === Filter bar ===
+function setFilter(filter: FilterKind) {
+  if (filter === activeFilter) return;
+  activeFilter = filter;
+  selectedIndex = 0;
+  render();
+}
+
+function updateFilterBar() {
+  filterBar.querySelectorAll(".filter-btn").forEach((btn) => {
+    const el = btn as HTMLButtonElement;
+    const filter = el.dataset.filter;
+    const isActive = filter === activeFilter;
+    el.classList.toggle("active", isActive);
+    el.setAttribute("aria-pressed", String(isActive));
+  });
+  // Keep aria-label in sync with current language.
+  filterBar.setAttribute("aria-label", t("filterBarLabel"));
+}
+
 // === Render ===
 function render() {
   const query = searchInput.value.toLowerCase();
+
+  // Combine search + filter: search narrows, filter categorizes
   const filtered = clips.filter(c => {
+    if (!matchesFilter(c, activeFilter)) return false;
     if (!query) return true;
     return c.preview.toLowerCase().includes(query)
       || c.source_exe.toLowerCase().includes(query)
@@ -118,24 +187,44 @@ function render() {
 
   // Selection indexes into visibleClips — keep it in range after any
   // filter or list change (delete, eviction, new search).
-  if (selectedIndex >= visibleClips.length) {
-    selectedIndex = visibleClips.length - 1;
+  // -1 means no selection (empty result set); any non-negative value
+  // is clamped into [0, visibleClips.length).
+  if (visibleClips.length === 0) {
+    selectedIndex = -1;
+  } else {
+    if (selectedIndex < 0) selectedIndex = 0;
+    if (selectedIndex >= visibleClips.length) selectedIndex = visibleClips.length - 1;
   }
 
-  // Preserve the scroll position across the rebuild: setting innerHTML
-  // collapses the container and resets scrollTop to 0, which CONTEXT
-  // forbids — live captures must not scroll the list to the top.
+  // Close stale menus (DOM is rebuilt, old More button is gone).
+  openMenuClipId = null;
+  hideActionMenu();
+
+  // Preserve the scroll position across the rebuild.
   const scrollTop = clipList.scrollTop;
   clipList.innerHTML = "";
+
   const searching = query.length > 0;
+  const filtering = activeFilter !== "all";
   const showEmpty = visibleClips.length === 0;
+  const totalEmpty = clips.length === 0;
+
   emptyState.classList.toggle("hidden", !showEmpty);
   if (showEmpty) {
-    // "No history yet" and "no search matches" are different states —
-    // show the honest one.
-    emptyTitle.textContent = searching ? t("noResults") : t("emptyTitle");
-    emptyHint.classList.toggle("hidden", searching);
+    if (totalEmpty) {
+      emptyTitle.textContent = t("emptyTitle");
+      emptyHint.classList.remove("hidden");
+    } else if (searching || filtering) {
+      emptyTitle.textContent = searching && filtering
+        ? t("noResults")
+        : filtering && !searching
+          ? t("categoryEmpty")
+          : t("noResults");
+      emptyHint.classList.add("hidden");
+    }
   }
+
+  updateFilterBar();
 
   let hasPinned = false;
   let hasUnpinned = false;
@@ -156,10 +245,9 @@ function render() {
     const el = document.createElement("div");
     el.className = `clip-item${clip.truncated ? " truncated" : ""}${index === selectedIndex ? " selected" : ""}`;
     el.dataset.index = String(index);
-    el.addEventListener("click", (e) => {
-      // Don't paste if clicking action buttons
-      const target = e.target as HTMLElement;
-      if (target.closest(".clip-action-btn")) return;
+
+    // Click row body = paste. Action buttons stop propagation.
+    el.addEventListener("click", () => {
       pasteClip(clip);
     });
 
@@ -175,6 +263,9 @@ function render() {
     } else if (clip.kind === "FilePaths") {
       iconDiv.className = "clip-icon text-icon";
       iconDiv.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+    } else if (isLink(clip.text_content)) {
+      iconDiv.className = "clip-icon text-icon";
+      iconDiv.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
     } else {
       iconDiv.className = "clip-icon text-icon";
       iconDiv.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
@@ -221,13 +312,14 @@ function render() {
     time.textContent = formatTime(clip.captured_at);
     el.appendChild(time);
 
-    // Actions
+    // Actions — always-visible SVG buttons
     const actions = document.createElement("div");
     actions.className = "clip-actions";
 
+    // Pin
     const pinBtn = document.createElement("button");
     pinBtn.className = `clip-action-btn pin-btn${clip.pinned ? " pinned" : ""}`;
-    pinBtn.innerHTML = "📌";
+    pinBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="${clip.pinned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2"><path d="M12 2v8M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M4 6h16"/><path d="M10 10v8a2 2 0 0 0 2 2 2 2 0 0 0 2-2v-8"/></svg>`;
     pinBtn.title = clip.pinned ? t("unpinTitle") : t("pinTitle");
     pinBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -235,9 +327,10 @@ function render() {
     });
     actions.appendChild(pinBtn);
 
+    // Copy
     const copyBtn = document.createElement("button");
     copyBtn.className = "clip-action-btn";
-    copyBtn.innerHTML = "📋";
+    copyBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
     copyBtn.title = t("copyOnlyTitle");
     copyBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -245,28 +338,58 @@ function render() {
     });
     actions.appendChild(copyBtn);
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "clip-action-btn delete-btn";
-    deleteBtn.innerHTML = "🗑";
-    deleteBtn.title = t("deleteTitle");
-    deleteBtn.addEventListener("click", (e) => {
+    // More (opens menu with Delete)
+    const moreBtn = document.createElement("button");
+    moreBtn.className = "clip-action-btn more-btn";
+    moreBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>`;
+    moreBtn.title = t("moreTitle");
+    moreBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      deleteClip(clip);
+      toggleActionMenu(clip.id, moreBtn);
     });
-    actions.appendChild(deleteBtn);
+    actions.appendChild(moreBtn);
 
     el.appendChild(actions);
     clipList.appendChild(el);
   });
 
-  // Restore the user's scroll position; keyboard navigation (a selected
-  // item) wins and scrolls the selection into view instead.
+  // Restore scroll position; keyboard navigation (selected item) wins
+  // and scrolls the selection into view instead.
   clipList.scrollTop = scrollTop;
   if (selectedIndex >= 0) {
     const selected = clipList.querySelector(".clip-item.selected");
     selected?.scrollIntoView({ block: "nearest" });
   }
 }
+
+// === Action Menu ===
+function toggleActionMenu(clipId: string, anchor: HTMLElement) {
+  if (openMenuClipId === clipId) {
+    hideActionMenu();
+    return;
+  }
+  openMenuClipId = clipId;
+  const rect = anchor.getBoundingClientRect();
+  const panelRect = document.getElementById("panel")!.getBoundingClientRect();
+  actionMenu.classList.remove("hidden");
+  actionMenu.style.top = `${rect.top - panelRect.top + rect.height + 4}px`;
+  actionMenu.style.right = `${panelRect.right - rect.right}px`;
+}
+
+function hideActionMenu() {
+  openMenuClipId = null;
+  actionMenu.classList.add("hidden");
+}
+
+actionMenu.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const btn = (e.target as HTMLElement).closest(".menu-item-delete");
+  if (btn && openMenuClipId) {
+    const clip = clips.find(c => c.id === openMenuClipId);
+    if (clip) deleteClip(clip);
+    hideActionMenu();
+  }
+});
 
 // === Actions ===
 async function pasteClip(clip: Clip) {
@@ -416,7 +539,12 @@ function formatTime(ts: number): string {
 
 // === Keyboard Navigation ===
 function moveSelection(delta: number) {
-  selectedIndex = Math.min(Math.max(selectedIndex + delta, 0), visibleClips.length - 1);
+  if (visibleClips.length === 0) return;
+  if (selectedIndex < 0) {
+    selectedIndex = 0;
+  } else {
+    selectedIndex = Math.min(Math.max(selectedIndex + delta, 0), visibleClips.length - 1);
+  }
   render();
 }
 
@@ -431,6 +559,26 @@ function pasteSelected() {
 // vim mode would make the letters j/k untypeable in search.
 document.addEventListener("keydown", (e) => {
   const inSearch = document.activeElement === searchInput;
+  const inFilter = document.activeElement instanceof HTMLElement
+    && document.activeElement.closest("#filter-bar");
+
+  // Filter bar: ArrowLeft / ArrowRight move between filter buttons
+  if (inFilter) {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const buttons = Array.from(filterBar.querySelectorAll(".filter-btn")) as HTMLButtonElement[];
+      const currentIdx = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      const nextIdx = e.key === "ArrowLeft"
+        ? (currentIdx - 1 + buttons.length) % buttons.length
+        : (currentIdx + 1) % buttons.length;
+      buttons[nextIdx].focus();
+      // Activate the filter directly — do NOT go through the click handler
+      // which calls searchInput.focus() and would steal focus from the bar.
+      const filter = buttons[nextIdx].dataset.filter as FilterKind;
+      setFilter(filter);
+      return;
+    }
+  }
 
   switch (e.key) {
     case "ArrowDown":
@@ -443,10 +591,27 @@ document.addEventListener("keydown", (e) => {
       return;
     case "Enter":
       e.preventDefault();
+      // When a filter button has focus, activate it directly and keep
+      // focus there. preventDefault already cancelled the native click,
+      // so we must handle activation ourselves.
+      if (inFilter) {
+        const btn = document.activeElement as HTMLButtonElement;
+        const filter = btn.dataset.filter as FilterKind;
+        if (filter) {
+          setFilter(filter);
+          btn.focus();
+        }
+        return;
+      }
       pasteSelected();
       return;
     case "Escape":
       e.preventDefault();
+      // If action menu is open, first Escape closes only the menu
+      if (openMenuClipId) {
+        hideActionMenu();
+        return;
+      }
       // Vim mode: first Escape blurs the search box into navigation mode,
       // the next Escape closes the Panel.
       if (inSearch && vimMode) {
@@ -457,7 +622,7 @@ document.addEventListener("keydown", (e) => {
       return;
   }
 
-  if (!inSearch) {
+  if (!inSearch && !inFilter) {
     if (vimMode && (e.key === "j" || e.key === "k")) {
       e.preventDefault();
       moveSelection(e.key === "j" ? 1 : -1);
@@ -476,6 +641,29 @@ searchInput.addEventListener("input", () => {
   selectedIndex = 0;
   render();
 });
+
+// Filter bar mouse click: activate the filter and move focus to search
+// so the user can type immediately (mouse intent). Keyboard arrow navigation
+// skips the focus move — it calls setFilter() directly from the keydown path.
+filterBar.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest(".filter-btn") as HTMLButtonElement | null;
+  if (!btn) return;
+  const filter = btn.dataset.filter as FilterKind;
+  if (filter && filter !== activeFilter) {
+    setFilter(filter);
+    searchInput.focus();
+  }
+});
+
+// Close menu on outside click (panel body clicks that aren't on a More button
+// or the menu itself). Row clicks paste — close the menu but let paste happen.
+document.addEventListener("click", (e) => {
+  if (!openMenuClipId) return;
+  const target = e.target as HTMLElement;
+  if (!target.closest(".more-btn") && !target.closest("#clip-action-menu")) {
+    hideActionMenu();
+  }
+}, true); // capture phase — runs before row click handler so menu closes first
 
 // Clicks on the transparent margin around the panel dismiss it.
 document.body.addEventListener("click", (e) => {

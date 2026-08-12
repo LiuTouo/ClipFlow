@@ -561,6 +561,64 @@ fn log(msg: &str) {
     let _ = msg;
 }
 
+/// Pure coordinate math: compute the i32 (x, y) that centers window of
+/// `win_size` inside a monitor at `mon_pos` with `mon_size`.
+///
+/// Safe for all inputs: intermediate i64 arithmetic prevents overflow, the
+/// final i32 conversion saturates to the i32 range, and the result is clamped
+/// so the window never lands above or left of the monitor origin (handles both
+/// negative monitor coords and windows larger than the monitor).
+fn center_coords(mon_pos: (i32, i32), mon_size: (u32, u32), win_size: (u32, u32)) -> (i32, i32) {
+    let cx = mon_pos.0 as i64 + (mon_size.0 as i64 - win_size.0 as i64) / 2;
+    let cy = mon_pos.1 as i64 + (mon_size.1 as i64 - win_size.1 as i64) / 2;
+    let cx = cx.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let cy = cy.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    (cx.max(mon_pos.0), cy.max(mon_pos.1))
+}
+
+/// Position `window` centered on the monitor that currently contains the
+/// cursor. Every failure is logged and swallowed: a transient cursor/monitor
+/// lookup failure must not prevent showing the panel.
+fn center_on_cursor_monitor(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let cursor = match app.cursor_position() {
+        Ok(p) => p,
+        Err(e) => {
+            log(&format!("[ClipFlow] cursor_position failed: {:?}", e));
+            return;
+        }
+    };
+
+    let monitor = match app.monitor_from_point(cursor.x, cursor.y) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            log("[ClipFlow] monitor_from_point returned None");
+            return;
+        }
+        Err(e) => {
+            log(&format!("[ClipFlow] monitor_from_point failed: {:?}", e));
+            return;
+        }
+    };
+
+    let window_size = window.outer_size().unwrap_or(tauri::PhysicalSize {
+        width: 480,
+        height: 620,
+    });
+
+    let mon_pos = monitor.position();
+    let mon_size = monitor.size();
+
+    let (x, y) = center_coords(
+        (mon_pos.x, mon_pos.y),
+        (mon_size.width, mon_size.height),
+        (window_size.width, window_size.height),
+    );
+
+    if let Err(e) = window.set_position(tauri::PhysicalPosition::new(x, y)) {
+        log(&format!("[ClipFlow] set_position failed: {:?}", e));
+    }
+}
+
 fn show_panel(app: &tauri::AppHandle) {
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
@@ -568,6 +626,7 @@ fn show_panel(app: &tauri::AppHandle) {
     log("[ClipFlow] show_panel() called");
     if let Some(window) = app.get_webview_window("main") {
         log("[ClipFlow] panel exists, showing");
+        center_on_cursor_monitor(app, &window);
         let _ = window.show();
         let _ = window.set_focus();
     } else {
@@ -587,13 +646,13 @@ fn show_panel(app: &tauri::AppHandle) {
             .resizable(false)
             .skip_taskbar(true)
             .always_on_top(true)
-            .visible(true)
-            .focused(true)
-            .center()
+            .visible(false)
+            .focused(false)
             .build()
         {
             Ok(w) => {
                 log(&format!("[ClipFlow] panel created: {:?}", w.label()));
+                center_on_cursor_monitor(app, &w);
                 // Click outside (focus loss) dismisses the Panel. The handler
                 // is armed only after the window has gained focus once (with a
                 // grace-period backstop), so a transient focus bounce during
@@ -996,5 +1055,63 @@ mod monitor_debounce_tests {
         assert_eq!(seq, Some(7));
         assert_eq!(since, Some(1000));
         assert_eq!(first, 1000);
+    }
+}
+
+#[cfg(test)]
+mod center_coords_tests {
+    use super::center_coords;
+
+    #[test]
+    fn center_on_positive_monitor() {
+        let (x, y) = center_coords((0, 0), (1920, 1080), (480, 620));
+        assert_eq!(x, 720);
+        assert_eq!(y, 230);
+    }
+
+    #[test]
+    fn center_on_negative_monitor_origin() {
+        let (x, y) = center_coords((-1920, 0), (1920, 1080), (480, 620));
+        assert_eq!(x, -1200);
+        assert_eq!(y, 230);
+    }
+
+    #[test]
+    fn window_larger_than_monitor_clamps_to_origin() {
+        let (x, y) = center_coords((0, 0), (800, 600), (1024, 768));
+        assert_eq!(x, 0);
+        assert_eq!(y, 0);
+    }
+
+    #[test]
+    fn odd_dimensions_truncate_correctly() {
+        let (x, y) = center_coords((0, 0), (1921, 1079), (480, 620));
+        assert_eq!(x, 720);
+        assert_eq!(y, 229);
+    }
+
+    #[test]
+    fn negative_monitor_with_window_larger_clamps() {
+        let (x, y) = center_coords((-500, -300), (640, 480), (800, 600));
+        assert_eq!(x, -500);
+        assert_eq!(y, -300);
+    }
+
+    #[test]
+    fn extreme_monitor_position_saturates_to_i32_range() {
+        // i64 center would overflow i32 — the saturating clamp keeps it in range.
+        let (x, y) = center_coords(
+            (i32::MAX - 100, i32::MIN + 100),
+            (2000, 2000),
+            (480, 620),
+        );
+        // x: center adds (2000-480)/2=760, overflows i32 → saturates at i32::MAX.
+        assert_eq!(x, i32::MAX);
+        // y: center adds (2000-620)/2=690 → i32::MIN+100+690 = i32::MIN+790, fits.
+        assert_eq!(y, i32::MIN + 790);
+        // Neither wrapped.
+        assert!(x >= i32::MAX - 100);
+        assert!(y >= i32::MIN);
+        assert!(y <= i32::MIN + 1000);
     }
 }

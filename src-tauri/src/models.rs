@@ -112,6 +112,10 @@ pub struct AppConfig {
     /// When true, check for updates automatically (installed builds update
     /// in the background; portable builds check when the About page opens).
     pub auto_update: bool,
+    /// When true, the Panel remembers the last-selected history filter across
+    /// hide/show. When false (default), it resets to "All" each time the
+    /// Panel opens. This does NOT persist the selected filter itself.
+    pub remember_history_filter: bool,
 }
 
 impl Default for AppConfig {
@@ -138,6 +142,7 @@ impl Default for AppConfig {
             language: "zh-TW".to_string(),
             paste_files_as_files: true,
             auto_update: true,
+            remember_history_filter: false,
         }
     }
 }
@@ -203,6 +208,56 @@ pub fn data_dir() -> std::path::PathBuf {
 
 fn config_path() -> std::path::PathBuf {
     data_dir().join("clipflow.config.json")
+}
+
+#[cfg(test)]
+mod backward_compat_tests {
+    use super::AppConfig;
+
+    #[test]
+    fn old_json_without_remember_history_filter_defaults_false() {
+        let json = r#"{
+            "text_size_limit_kb": 100,
+            "text_count_limit": 100,
+            "image_count_limit": 10,
+            "image_memory_budget_mb": 50,
+            "image_size_limit_mb": 10,
+            "hotkey": "Ctrl+Shift+V",
+            "startup": false,
+            "persist": false,
+            "exclusion_list": ["1Password.exe"],
+            "vim_mode": false,
+            "debounce_ms": 200,
+            "theme": "system",
+            "language": "zh-TW",
+            "paste_files_as_files": true,
+            "auto_update": true
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).expect("deserialize old config");
+        assert!(!cfg.remember_history_filter);
+    }
+
+    #[test]
+    fn explicit_true_round_trips() {
+        let cfg = AppConfig {
+            remember_history_filter: true,
+            ..AppConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let round: AppConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(round.remember_history_filter);
+    }
+
+    #[test]
+    fn explicit_false_round_trips() {
+        let cfg = AppConfig {
+            remember_history_filter: false,
+            ..AppConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let round: AppConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(!round.remember_history_filter);
+    }
 }
 
 #[cfg(test)]
