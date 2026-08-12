@@ -7,111 +7,122 @@
 </p>
 
 <p align="center">
-  <strong>專注工作流，不打断節奏的剪貼簿。</strong><br />
-  <sub>輕量 · 即速 · 專注</sub>
+  <strong>輕量的 Windows 剪貼簿歷史工具。</strong><br />
+  <sub>快速取用文字、圖片與已複製的檔案，不打斷工作流程。</sub>
 </p>
 
-現代輕量 Windows 剪貼簿歷史工具。Tauri v2 + Vanilla TS/CSS，Raycast 風格浮動面板。提供免安裝可攜版（不寫登錄檔）與 NSIS 安裝版（背景自動更新）。
+ClipFlow 是使用 Tauri 2 開發的 Windows 10／11 剪貼簿管理工具。按下全域快捷鍵即可開啟精簡的浮動面板，搜尋近期內容，再貼回原本使用的應用程式。
 
-一個專為現代 AI VibeCoding 最常用到的動作「複製」而生的工具。
-
-領域詞彙與行為規格請見 `CONTEXT.md`。
+專案提供支援背景更新的 NSIS 安裝版，以及免安裝、不寫入登錄檔的可攜版執行檔。
 
 ## 功能
 
-- **剪貼簿監聽** — 文字、圖片、檔案路徑三種 Clip，SHA-256 去重
-- **浮動面板** — `Ctrl+Shift+V` 呼叫透明圓角的 Raycast 風格面板，即時更新
-- **搜尋** — 即時大小寫不敏感子字串過濾
-- **鍵盤優先** — 方向鍵 / `Enter` / `Esc`，可選 Vim 模式（`j`/`k`）
-- **釘選** — 最多 10 則置頂於分隔線上方，永不淘汰
-- **貼上** — 寫入剪貼簿後把焦點還給原應用程式並模擬 `Ctrl+V`；每則另有純複製按鈕
-- **檔案貼上** — 檔案歷史可貼上實際檔案（CF_HDROP，等同檔案總管複製；來源檔案須仍存在），可改為貼路徑文字
-- **自動更新** — 安裝版背景下載並安裝更新（簽章驗證）；免安裝版於「關於」頁檢查並下載後手動覆蓋
-- **刪除可復原** — 3 秒吐司提示
-- **排除清單** — 密碼管理工具（1Password、Bitwarden、KeePass）的剪貼內容永不記錄
-- **暫停監聽** — 從系統匣選單切換；暫停期間的複製永久捨棄
-- **容量限制** — 文字筆數/大小、圖片張數/記憶體上限皆可調；最舊未釘選者優先淘汰
-- **可選 SQLite 持久化** — 寫穿至 exe 旁的 `clipflow.db`
-- **開機自啟** — 可選 `shell:startup` 捷徑，不使用登錄檔 Run 機碼
-- **主題與語言** — 深/淺色跟隨系統；設定介面支援繁體中文（預設）與英文
+- 記錄文字、圖片與已複製的檔案路徑
+- 即時搜尋 Clip 內容與來源應用程式
+- 鍵盤操作，並可選用 `j`／`k` Vim 瀏覽方式
+- 最多釘選 10 則 Clip，使其不受容量限制自動淘汰
+- 貼回原本聚焦的應用程式，或只複製而不關閉面板
+- 將檔案歷史貼成實際檔案（`CF_HDROP`）或路徑文字
+- 刪除後可在 3 秒內復原
+- 自訂歷史容量、快捷鍵、主題、語言與擷取防抖動時間
+- 排除指定應用程式所複製的剪貼簿內容
+- 從系統匣暫停監聽
+- 選擇是否以 SQLite 保存歷史
+- 全介面支援繁體中文與英文
 
 ## 系統需求
 
-- Windows 10 / 11（64 位元）
-- [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) — Windows 11 內建，大多數 Windows 10 也已具備。僅少數精簡版 / LTSC 系統需要另行安裝（小型 evergreen 安裝包）。
+- 64 位元 Windows 10 或 Windows 11
+- [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 
-## 快速開始（免安裝）
+Windows 11 與多數已更新的 Windows 10 已包含 WebView2。精簡版或 LTSC 系統可能需要另行安裝 Evergreen 版本。
 
-從 [Releases](https://github.com/LiuTouo/ClipFlow/releases/latest) 下載免安裝執行檔（`*-portable.exe`）或 NSIS 安裝檔（`*-setup.exe`，支援背景自動更新）。
+## 下載
 
-1. 把 `clipflow.exe` 放進專屬資料夾（設定與資料會產生在 exe 旁邊；NSIS 安裝版則存 `%APPDATA%\ClipFlow`）。
-2. 執行——不會出現視窗，ClipFlow 常駐在系統匣。
-3. 按 `Ctrl+Shift+V` 開啟歷史面板。
+請從 [GitHub Releases](https://github.com/LiuTouo/ClipFlow/releases/latest) 下載最新版：
 
-```
-ClipFlow\
-├── clipflow.exe
-├── clipflow.config.json   （首次執行自動產生）
-└── clipflow.db            （啟用持久化後才出現）
-```
+| 版本 | 適合情境 | 更新方式 | 資料位置 |
+| --- | --- | --- | --- |
+| NSIS 安裝版（`*-setup.exe`） | 需要一般安裝流程 | 啟用自動更新後，在背景下載並安裝經簽章的更新 | `%APPDATA%\ClipFlow` |
+| 可攜版（`*-portable.exe`） | 需要獨立執行檔 | 從「關於」視窗檢查並下載經簽章的新執行檔，再由使用者手動取代執行中的版本 | 執行檔旁 |
+
+可攜版不需要安裝，也不使用登錄檔 `Run` 機碼。選用的開機自啟功能會在 `shell:startup` 建立捷徑。
+
+## 快速開始
+
+1. 下載並執行任一版本。
+2. ClipFlow 啟動後常駐系統匣，不會開啟主視窗。
+3. 照常複製文字、圖片或檔案。
+4. 按 `Ctrl+Shift+V` 開啟剪貼簿歷史。
+5. 選取 Clip，將其貼回原本使用的應用程式。
+
+全域快捷鍵可在設定中變更。如果選定的快捷鍵已被其他應用程式占用，ClipFlow 會開啟設定並要求改用其他組合。
 
 ## 使用方式
 
-- `Ctrl+Shift+V` — 開關歷史面板（可自訂）
-- `Esc` / 點擊面板外 / 選取 Clip — 關閉面板
-- 點擊 Clip — 貼上到原本聚焦的應用程式
-- 📌 釘選 · 📋 純複製 · 🗑 刪除 — 每則 Clip 的側邊動作（面板保持開啟）
-- 系統匣圖示（右鍵） — 暫停監聽、設定、關於、結束
+| 操作 | 結果 |
+| --- | --- |
+| `Ctrl+Shift+V` | 開啟或關閉歷史面板 |
+| 方向鍵或 `j`／`k` | 在 Clip 間移動（`j`／`k` 需先啟用 Vim 模式） |
+| `Enter` 或點擊 Clip | 貼上選取內容並關閉面板 |
+| `Esc` 或點擊面板外 | 關閉面板 |
+| 釘選 | 將 Clip 保留在頂部，避免被自動淘汰 |
+| 複製 | 將 Clip 放入剪貼簿，但不關閉面板 |
+| 刪除 | 移除 Clip，並顯示 3 秒復原操作 |
+| 系統匣選單 | 暫停監聽、開啟設定或關於視窗，或結束程式 |
+
+搜尋會比對 Clip 預覽、來源應用程式名稱與來源視窗標題，且不區分大小寫。
+
+檔案歷史預設會寫入 Windows 實際檔案拖放格式，貼上行為等同在檔案總管複製檔案。原始檔案必須仍然存在；也可在設定中改為貼上路徑文字。
+
+## 資料與隱私
+
+- 剪貼簿歷史預設只保留於記憶體，ClipFlow 結束後即消失。
+- 啟用持久化後，歷史會寫入 `clipflow.db`；停用時會刪除該資料庫。
+- 可攜版的設定與資料位於執行檔旁；安裝版使用 `%APPDATA%\ClipFlow`。
+- 預設排除清單包含 `1Password.exe`、`Bitwarden.exe` 與 `KeePass.exe`。其中任一應用程式位於前景時所複製的內容會被捨棄。
+- 暫停監聽期間複製的內容會被捨棄，恢復監聽後不會補抓。
+- 文字與圖片歷史容量可調整。超過限制時，會優先移除最舊且未釘選的 Clip。
 
 ## 已知限制
 
-- 無法貼上到**以系統管理員身分執行**的應用程式（Windows UIPI 會阻擋非提權程序的模擬輸入）。內容會保留在剪貼簿，請手動按 `Ctrl+V`。
-- 排除清單以複製當下的前景應用程式判斷；密碼管理員的自動填寫（管理員本身不在前景）無法被排除。
+- 未提權的 ClipFlow 無法將模擬貼上輸入送至以系統管理員身分執行的應用程式，因為 Windows UIPI 會加以阻擋。選取內容仍會留在剪貼簿，可手動按 `Ctrl+V` 貼上。
+- 應用程式排除功能依複製當下的前景程式判斷。若密碼管理程式本身不在前景，便無法辨識其自動填入內容。
+- 檔案歷史只保存路徑參照，不會複製檔案內容。如果來源檔案已移動或刪除，便無法貼成實際檔案。
 
 ## 從原始碼建置
 
-前置需求：[Node.js](https://nodejs.org/) 與 [Rust](https://rustup.rs/)。
+安裝 [Node.js](https://nodejs.org/)、[Rust](https://rustup.rs/) 與 Tauri 2 所需的 Windows 前置元件，然後執行：
 
-```bash
-git clone https://github.com/LiuTouo/ClipFlow
+```powershell
+git clone https://github.com/LiuTouo/ClipFlow.git
 cd ClipFlow
-npm install
+npm ci
 npm run build:app
 ```
 
-產出：`src-tauri/target/release/clipflow.exe`（約 15 MB，前端資源已嵌入）。
+正式版執行檔會產生於 `src-tauri/target/release/clipflow.exe`。正式建置請使用 `npm run build:app`，因為此指令會啟用 Tauri 必要的 `custom-protocol` feature。
 
-`npm run build:app` 會先跑 `npm run build`（tsc + vite → `dist/`）再執行 `cargo build --release --features custom-protocol`。`custom-protocol` 是**正式建置的必要 feature**：少了它 Tauri 會以 dev 模式編譯，所有視窗會去連 `http://localhost:1420` 而不是載入嵌入資源。開發時（`npm run tauri dev`，走 vite dev server 熱更新）則保持關閉。
+若要以熱更新模式開發：
 
-## 開發
-
-```bash
+```powershell
 npm run tauri dev
 ```
 
-## 發版流程
+常用驗證指令：
 
-1. `npm run bump -- x.y.z` — 以 `src-tauri/Cargo.toml` 為單一來源，同步 package.json、package-lock.json 並插入 CHANGELOG 骨架。
-2. 填寫 `CHANGELOG.md` 該版本條目。
-3. Commit、`git tag vx.y.z`、`git push --tags` — GitHub Actions 自動建置 NSIS 安裝檔、免安裝執行檔與 updater `latest.json` 並上傳 Release（需在 repo secrets 設定 `TAURI_SIGNING_PRIVATE_KEY` 與 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）。
-
-## 專案結構
-
-```
-index.html / settings.html / about.html   # 頁面（vite 多頁）
-src/                                      # 前端 TS + 樣式
-src-tauri/
-  src/
-    main.rs          # 入口：--hidden 旗標
-    lib.rs           # Tauri 核心：系統匣、快捷鍵、命令、面板生命週期
-    clipboard.rs     # Win32 剪貼簿讀寫、DIB 解碼、Ctrl+V 模擬
-    history.rs       # 記憶體歷史：去重、容量限制、淘汰、釘選
-    models.rs        # Clip + AppConfig（可攜 JSON 設定）
-    persistence.rs   # 可選 SQLite 寫穿儲存
-    startup.rs       # shell:startup .lnk（COM IShellLinkW）
-    update.rs        # 更新管道判斷、updater 命令、背景自動更新
+```powershell
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-## 技術棧
+## 文件
 
-Tauri v2（Rust，`windows` crate 呼叫 Win32）· Vanilla TypeScript/CSS · vite · rusqlite（內嵌 SQLite）· image/sha2/base64
+- [更新日誌](CHANGELOG.md)
+- [行為與領域參考](CONTEXT.md)
+- [架構決策紀錄](docs/adr/README.md)
+
+## 授權
+
+ClipFlow 採用 [GNU General Public License v3.0](LICENSE) 授權。

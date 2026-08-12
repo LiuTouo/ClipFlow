@@ -7,111 +7,122 @@
 </p>
 
 <p align="center">
-  <strong>A clipboard that keeps your workflow uninterrupted.</strong><br />
-  <sub>Lightweight · Instant · Focused</sub>
+  <strong>A lightweight clipboard history tool for Windows.</strong><br />
+  <sub>Fast access to text, images, and copied files without interrupting your workflow.</sub>
 </p>
 
-Modern lightweight Windows clipboard history tool. Tauri v2 + Vanilla TS/CSS, Raycast-style floating panel. Fully portable — no installation, no registry writes.
+ClipFlow is a Windows 10/11 clipboard manager built with Tauri 2. Press a global shortcut to open a compact floating panel, search recent clips, and paste one back into the app you were using.
 
-A tool purpose-built for the most frequent action in modern AI VibeCoding — copying.
-
-See `CONTEXT.md` for the domain glossary and behavior spec.
+It is available as an NSIS installer with background updates or as a portable executable with no installation or registry writes.
 
 ## Features
 
-- **Clipboard monitoring** — Text, Image, and File Paths clips with SHA-256 deduplication
-- **Floating panel** — `Ctrl+Shift+V` toggles a transparent, rounded Raycast-style panel; real-time updates
-- **Search** — instant case-insensitive substring filtering
-- **Keyboard first** — arrows / `Enter` / `Esc`, optional Vim mode (`j`/`k`)
-- **Pin** — up to 10 clips pinned above a divider, never evicted
-- **Paste** — writes to the clipboard, returns focus to the previous app, simulates `Ctrl+V`; copy-only button per clip
-- **File paste** — file entries can paste the actual files (CF_HDROP, like an Explorer copy; source files must still exist), or fall back to pasting path text
-- **Auto-update** — installed builds download and install updates in the background (signature-verified); portable builds check and download from the About page for a manual overwrite
-- **Delete with undo** — 3-second toast
-- **Exclusion list** — clipboard content from password managers (1Password, Bitwarden, KeePass) is never recorded
-- **Pause monitoring** — from the tray menu; paused copies are permanently discarded
-- **Capacity limits** — configurable text count/size, image count/memory budget; oldest unpinned evicted first
-- **Optional SQLite persistence** — write-through to `clipflow.db` next to the exe
-- **Autostart** — optional `shell:startup` shortcut, no registry Run key
-- **Themes & languages** — dark/light follows system; settings UI in 繁體中文 (default) or English
+- Capture text, images, and copied file paths
+- Search clip content and source application instantly
+- Navigate with the keyboard, with optional `j` / `k` Vim controls
+- Pin up to 10 clips so capacity limits never evict them
+- Paste into the previously focused app or copy without closing the panel
+- Paste copied files as actual files (`CF_HDROP`) or as path text
+- Undo deleted clips within 3 seconds
+- Configure history limits, hotkey, theme, language, and capture debounce
+- Exclude clipboard content copied from selected applications
+- Pause monitoring from the system tray
+- Optionally persist history in SQLite
+- Use Traditional Chinese or English throughout the interface
 
 ## Requirements
 
-- Windows 10 / 11 (64-bit)
-- [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) — preinstalled on Windows 11 and on most up-to-date Windows 10 machines. Only rare stripped/LTSC systems need the small evergreen installer.
+- Windows 10 or Windows 11, 64-bit
+- [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 
-## Quick start (portable)
+WebView2 is included with Windows 11 and most current Windows 10 installations. Stripped-down or LTSC systems may need the Evergreen installer.
 
-Download from [Releases](https://github.com/LiuTouo/ClipFlow/releases/latest): the portable exe (`*-portable.exe`) or the NSIS installer (`*-setup.exe`, with background auto-update).
+## Download
 
-1. Copy `clipflow.exe` into its own folder (config and data live next to the exe; the NSIS-installed build uses `%APPDATA%\ClipFlow` instead).
-2. Run it — no window appears; ClipFlow lives in the system tray.
-3. Press `Ctrl+Shift+V` to open the history panel.
+Download the latest version from [GitHub Releases](https://github.com/LiuTouo/ClipFlow/releases/latest):
 
-```
-ClipFlow\
-├── clipflow.exe
-├── clipflow.config.json   (auto-generated)
-└── clipflow.db            (only when persistence is enabled)
-```
+| Edition | Choose this if | Updates | Data location |
+| --- | --- | --- | --- |
+| NSIS installer (`*-setup.exe`) | You want a conventional installation | Downloads and installs signed updates in the background when automatic updates are enabled | `%APPDATA%\ClipFlow` |
+| Portable (`*-portable.exe`) | You want a standalone executable | Checks and downloads a signed replacement from the About window; you replace the running executable manually | Next to the executable |
+
+The portable edition does not require installation and does not use a registry `Run` entry. Optional startup uses a shortcut in `shell:startup`.
+
+## Quick start
+
+1. Download and run either edition.
+2. ClipFlow starts in the system tray without opening a main window.
+3. Copy text, an image, or files as usual.
+4. Press `Ctrl+Shift+V` to open clipboard history.
+5. Select a clip to paste it into the application you were using.
+
+The global shortcut can be changed in Settings. If another application already owns the selected shortcut, ClipFlow opens Settings and asks you to choose a different combination.
 
 ## Usage
 
-- `Ctrl+Shift+V` — toggle the history panel (configurable)
-- `Esc` / click outside / pick a clip — dismiss the panel
-- Click a clip — paste it into the previously focused app
-- 📌 pin · 📋 copy-only · 🗑 delete — per-clip side actions (panel stays open)
-- Tray icon (right-click) — Pause Monitoring, Settings, About, Quit
+| Action | Result |
+| --- | --- |
+| `Ctrl+Shift+V` | Open or close the history panel |
+| Arrow keys or `j` / `k` | Move through clips (`j` / `k` requires Vim mode) |
+| `Enter` or click a clip | Paste the selected clip and close the panel |
+| `Esc` or click outside | Close the panel |
+| Pin | Keep a clip at the top and protect it from automatic eviction |
+| Copy | Put a clip on the clipboard without closing the panel |
+| Delete | Remove a clip and show a 3-second undo action |
+| Tray menu | Pause monitoring, open Settings or About, or quit |
+
+Search matches clip previews, source application names, and source window titles without case sensitivity.
+
+For file entries, the default behavior writes an actual Windows file-drop clipboard format, so pasting works like copying files in File Explorer. The original files must still exist. This behavior can be changed to paste path text instead.
+
+## Data and privacy
+
+- Clipboard history is kept in memory by default and is lost when ClipFlow exits.
+- Enabling persistence writes history to `clipflow.db`. Disabling it deletes that database.
+- Portable configuration and data are stored next to the executable; installed builds use `%APPDATA%\ClipFlow`.
+- The default exclusion list contains `1Password.exe`, `Bitwarden.exe`, and `KeePass.exe`. Clips copied while one of these applications is in the foreground are discarded.
+- Copies made while monitoring is paused are discarded and are not captured after monitoring resumes.
+- Text and image history limits are configurable. When a limit is exceeded, the oldest unpinned clips are removed first.
 
 ## Known limitations
 
-- Paste cannot be injected into apps running **as administrator** (Windows UIPI blocks simulated input from non-elevated processes). The clip stays on the clipboard — press `Ctrl+V` manually.
-- The exclusion list matches the foreground app at copy time; password-manager autofill (where the manager is not in the foreground) cannot be excluded.
+- A non-elevated ClipFlow process cannot inject paste input into an application running as administrator because Windows UIPI blocks it. The selected content remains on the clipboard, so you can paste it manually with `Ctrl+V`.
+- Application exclusion is based on the foreground application at copy time. Password-manager autofill cannot be identified when the password manager itself is not the foreground application.
+- File history stores references to paths, not copies of file contents. Pasting files as files fails if the source files were moved or deleted.
 
 ## Build from source
 
-Prerequisites: [Node.js](https://nodejs.org/) and [Rust](https://rustup.rs/).
+Install [Node.js](https://nodejs.org/), [Rust](https://rustup.rs/), and the Windows prerequisites required by Tauri 2, then run:
 
-```bash
-git clone https://github.com/LiuTouo/ClipFlow
+```powershell
+git clone https://github.com/LiuTouo/ClipFlow.git
 cd ClipFlow
-npm install
+npm ci
 npm run build:app
 ```
 
-Output: `src-tauri/target/release/clipflow.exe` (~15 MB, frontend assets embedded).
+The release executable is written to `src-tauri/target/release/clipflow.exe`. Use `npm run build:app` for production builds because it enables Tauri's required `custom-protocol` feature.
 
-`npm run build:app` runs `npm run build` (tsc + vite → `dist/`) then `cargo build --release --features custom-protocol`. The `custom-protocol` feature is **required for production**: without it Tauri compiles in dev mode and every window tries to load `http://localhost:1420` instead of the embedded assets. Keep it off for `npm run tauri dev` (hot-reload via the vite dev server).
+For development with hot reload:
 
-## Dev
-
-```bash
+```powershell
 npm run tauri dev
 ```
 
-## Release
+Useful validation commands:
 
-1. `npm run bump -- x.y.z` — propagates the single source of truth (`src-tauri/Cargo.toml`) to package.json and package-lock.json, and inserts a CHANGELOG skeleton.
-2. Fill in the `CHANGELOG.md` entry.
-3. Commit, `git tag vx.y.z`, `git push --tags` — GitHub Actions builds the NSIS installer, portable exe, and updater `latest.json`, and uploads them to the Release (requires `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` repo secrets).
-
-## Project structure
-
-```
-index.html / settings.html / about.html   # pages (vite multi-page)
-src/                                      # frontend TS + styles
-src-tauri/
-  src/
-    main.rs          # entry: --hidden flag
-    lib.rs           # Tauri core: tray, hotkey, commands, panel lifecycle
-    clipboard.rs     # Win32 clipboard capture/write, DIB decode, Ctrl+V
-    history.rs       # in-memory history: dedup, limits, eviction, pinning
-    models.rs        # Clip + AppConfig (portable JSON config)
-    persistence.rs   # optional SQLite write-through store
-    startup.rs       # shell:startup .lnk via COM IShellLinkW
-    update.rs        # update channel detection, updater commands, background auto-update
+```powershell
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-## Tech stack
+## Documentation
 
-Tauri v2 (Rust, `windows` crate for Win32) · Vanilla TypeScript/CSS · vite · rusqlite (bundled SQLite) · image/sha2/base64
+- [Changelog](CHANGELOG.md)
+- [Behavior and domain reference](CONTEXT.md)
+- [Architecture decision records](docs/adr/README.md)
+
+## License
+
+ClipFlow is distributed under the [GNU General Public License v3.0](LICENSE).
