@@ -209,6 +209,7 @@ html, body {
 .search-container {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   padding: 10px 14px;
   border-bottom: 1px solid var(--divider);
   gap: 8px;
@@ -239,6 +240,7 @@ html, body {
 /* === Filter Bar === */
 #filter-bar {
   display: flex;
+  flex-shrink: 0;
   padding: 6px 8px;
   gap: 2px;
   border-bottom: 1px solid var(--divider);
@@ -289,6 +291,7 @@ html, body {
 /* === Clip List === */
 #clip-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 4px 6px;
 }
