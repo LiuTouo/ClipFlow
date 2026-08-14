@@ -16,6 +16,7 @@ interface AppConfig {
   vim_mode: boolean;
   debounce_ms: number;
   theme: string;
+  ui_opacity_percent: number;
   language: string;
   paste_files_as_files: boolean;
   auto_update: boolean;
@@ -57,8 +58,15 @@ function populateForm() {
   (document.getElementById("setting-remember-history-filter") as HTMLInputElement).checked = config.remember_history_filter;
   (document.getElementById("setting-debounce") as HTMLInputElement).value = String(config.debounce_ms);
   (document.getElementById("setting-theme") as HTMLSelectElement).value = config.theme;
+  updateOpacityDisplay(config.ui_opacity_percent);
   (document.getElementById("setting-language") as HTMLSelectElement).value = config.language || "zh-TW";
   (document.getElementById("setting-exclusions") as HTMLTextAreaElement).value = config.exclusion_list.join("\n");
+}
+
+function updateOpacityDisplay(value: number) {
+  const opacity = Math.min(100, Math.max(50, Number.isFinite(value) ? value : 96));
+  (document.getElementById("setting-ui-opacity") as HTMLInputElement).value = String(opacity);
+  (document.getElementById("setting-ui-opacity-value") as HTMLOutputElement).value = `${opacity}%`;
 }
 
 function showError(message: string) {
@@ -86,6 +94,10 @@ function bindEvents() {
     applyTheme((e.target as HTMLSelectElement).value);
   });
 
+  document.getElementById("setting-ui-opacity")!.addEventListener("input", (e) => {
+    updateOpacityDisplay(Number((e.target as HTMLInputElement).value));
+  });
+
   document.getElementById("settings-form")!.addEventListener("submit", async (e) => {
     e.preventDefault();
     clearError();
@@ -104,6 +116,7 @@ function bindEvents() {
     config.remember_history_filter = (document.getElementById("setting-remember-history-filter") as HTMLInputElement).checked;
     config.debounce_ms = Number((document.getElementById("setting-debounce") as HTMLInputElement).value);
     config.theme = (document.getElementById("setting-theme") as HTMLSelectElement).value;
+    config.ui_opacity_percent = Number((document.getElementById("setting-ui-opacity") as HTMLInputElement).value);
     config.language = (document.getElementById("setting-language") as HTMLSelectElement).value;
     config.exclusion_list = (document.getElementById("setting-exclusions") as HTMLTextAreaElement).value
       .split("\n")

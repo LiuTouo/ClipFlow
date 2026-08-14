@@ -54,7 +54,7 @@
   --radius-lg: 12px;
   --radius-xl: 16px;
 
-  --glass-bg: rgba(255, 255, 255, 0.94);
+  --glass-bg: #ffffff;
   --glass-border: rgba(255, 255, 255, 0.4);
 }
 
@@ -96,7 +96,7 @@
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.5);
 
-    --glass-bg: rgba(28, 28, 30, 0.94);
+    --glass-bg: #1c1c1e;
     --glass-border: rgba(255, 255, 255, 0.06);
   }
 }
@@ -137,7 +137,7 @@
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.5);
 
-  --glass-bg: rgba(28, 28, 30, 0.94);
+  --glass-bg: #1c1c1e;
   --glass-border: rgba(255, 255, 255, 0.06);
 }
 
@@ -203,6 +203,7 @@ html, body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  opacity: var(--panel-opacity, 1);
 }
 
 /* === Search === */
@@ -680,6 +681,27 @@ label.settings-row {
 .settings-row input:focus,
 .settings-row select:focus {
   border-color: var(--accent);
+}
+
+.settings-range-control {
+  display: flex;
+  align-items: center;
+  width: 160px;
+  gap: 10px;
+}
+
+.settings-range-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.settings-range-control output {
+  width: 42px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 /* iOS-style toggle switch */

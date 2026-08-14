@@ -4,6 +4,12 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.5.2] - 2026-08-14
+
+### Added
+
+- 新增 UI 不透明度設定，範圍 50%-100%，預設 96%，100% 為完全不透明
+
 ## [0.5.1] - 2026-08-12
 
 ### Fixed
@@ -197,6 +203,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.5.2]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.9...v0.5.0
 [0.4.9]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.8...v0.4.9

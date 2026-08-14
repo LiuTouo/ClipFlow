@@ -85,6 +85,7 @@ async function refreshConfig() {
       language?: string;
       vim_mode?: boolean;
       theme?: string;
+      ui_opacity_percent?: number;
       paste_files_as_files?: boolean;
       remember_history_filter?: boolean;
     }>("get_config");
@@ -93,6 +94,8 @@ async function refreshConfig() {
     pasteFilesAsFiles = config.paste_files_as_files !== false;
     rememberHistoryFilter = !!config.remember_history_filter;
     applyTheme(config.theme || "system");
+    const opacity = Math.min(100, Math.max(50, config.ui_opacity_percent ?? 96));
+    document.documentElement.style.setProperty("--panel-opacity", String(opacity / 100));
   } catch (err) {
     console.error("Failed to load config:", err);
     setLanguage("zh-TW");
