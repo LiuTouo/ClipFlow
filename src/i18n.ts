@@ -8,7 +8,9 @@ const I18N: Record<string, Record<string, string>> = {
   "zh-TW": {
     // Settings page
     settings: "設定",
+    settingsSubtitle: "調整 ClipFlow 的行為與外觀。",
     hotkey: "快捷鍵",
+    hotkeyLabel: "快捷鍵組合",
     hotkeyHint: "點擊以變更，按 Esc 取消",
     textHistory: "文字歷史",
     textSizeLimit: "單則文字大小上限 (KB)",
@@ -33,6 +35,10 @@ const I18N: Record<string, Record<string, string>> = {
     exclusionHint: "執行檔名稱（每行一個）。來自這些應用程式的剪貼簿內容不會被記錄。",
     save: "儲存",
     cancel: "取消",
+    loadingSettings: "載入設定中…",
+    saving: "儲存中…",
+    unsavedChanges: "有未儲存的變更",
+    settingsLoadFailed: "載入設定失敗，請重新開啟設定頁。",
     pressKeys: "請按下按鍵…",
     hotkeyInUse: "此按鍵組合已被其他應用程式使用",
     hotkeyNeedModifier: "快捷鍵需包含 Ctrl、Shift 或 Alt 至少一個",
@@ -97,7 +103,9 @@ const I18N: Record<string, Record<string, string>> = {
   en: {
     // Settings page
     settings: "Settings",
+    settingsSubtitle: "Tune ClipFlow's behavior and appearance.",
     hotkey: "Hotkey",
+    hotkeyLabel: "Hotkey combination",
     hotkeyHint: "Click to change, press Esc to cancel",
     textHistory: "Text History",
     textSizeLimit: "Text size limit (KB)",
@@ -122,6 +130,10 @@ const I18N: Record<string, Record<string, string>> = {
     exclusionHint: "Executable names (one per line). Clipboard content from these apps will not be recorded.",
     save: "Save",
     cancel: "Cancel",
+    loadingSettings: "Loading settings…",
+    saving: "Saving…",
+    unsavedChanges: "Unsaved changes",
+    settingsLoadFailed: "Failed to load settings — please reopen the settings page.",
     pressKeys: "Press keys...",
     hotkeyInUse: "This combination is already in use",
     hotkeyNeedModifier: "Hotkey must include at least one of Ctrl, Shift, or Alt",
@@ -193,6 +205,7 @@ export function currentLang(): string {
 
 export function setLanguage(l: string) {
   lang = I18N[l] ? l : "zh-TW";
+  document.documentElement.lang = lang;
 }
 
 /** Look up a string; `{name}` placeholders are filled from vars. */

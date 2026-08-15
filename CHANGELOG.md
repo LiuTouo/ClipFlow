@@ -4,6 +4,21 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.5.3] - 2026-08-15
+
+### Added
+
+- 設定頁新增載入中、未儲存變更、儲存中、儲存失敗等狀態提示；儲存失敗保留已填表單內容並可重試
+- 「儲存」按鈕改為 dirty + 驗證通過才啟用：表單未變更或欄位無效（空值、min/max、step 不符）時停用
+- 快捷鍵欄位支援鍵盤操作：Enter／Space 開始錄製、Esc 取消；狀態訊息與熱鍵錯誤加入 aria-live 與 role="alert" 無障礙標記
+- 新增 prefers-reduced-motion 支援，啟用「減少動態效果」時停用過渡動畫
+
+### Changed
+
+- 重新整理設定頁視覺與資訊層級：改以卡片式區塊分組（快捷鍵、文字歷史、圖片歷史、行為、外觀、排除清單），統一標題與輔助說明
+- 動作列改為 sticky footer，窄視窗下保持可見且不遮擋內容
+- 語言設定同步更新 `<html lang>` 屬性
+
 ## [0.5.2] - 2026-08-14
 
 ### Added
@@ -203,6 +218,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.5.3]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/LiuTouo/ClipFlow/compare/v0.4.9...v0.5.0
