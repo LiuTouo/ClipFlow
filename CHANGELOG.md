@@ -4,6 +4,17 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.5.4] - 2026-08-16
+
+### Added
+
+- 歷史項目支援按住 Space 預覽完整內容：滑鼠懸停項目後按住 Space 開啟獨立預覽視窗，顯示文字、圖片或檔案的完整內容與中繼資料（來源、擷取時間、大小），截斷內容會標示僅保存開頭部分
+- 搜尋列新增 `/` 快捷鍵提示，按下 `/` 即可聚焦搜尋框
+
+### Fixed
+
+- 預覽 Space 按鍵處理：修正按鍵連發、跨焦點保留 latch、以及預覽視窗中 Space 誤輸入文字等問題；搜尋框需明確取得焦點才接受輸入
+
 ## [0.5.3] - 2026-08-15
 
 ### Added
@@ -218,6 +229,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.5.4]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.0...v0.5.1
