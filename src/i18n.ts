@@ -81,6 +81,16 @@ const I18N: Record<string, Record<string, string>> = {
     pinLimitReached: "最多只能釘選 10 則",
     nothingToUndo: "沒有可復原的刪除",
     hotkeyInvalid: "無效的快捷鍵格式",
+    // Preview
+    previewTypeText: "文字",
+    previewTypeImage: "圖片",
+    previewTypeFiles: "檔案",
+    previewSource: "來源",
+    previewCaptured: "擷取時間",
+    previewSize: "大小",
+    previewEmpty: "（無內容）",
+    previewTruncatedSizes: "內容已截斷：僅保存開頭部分（已保存 {saved}，原始 {original}），完整內容無法復原。",
+    previewTruncatedNoSizes: "內容已截斷：僅保存開頭部分，完整內容無法復原。",
     // About
     aboutTitle: "關於 ClipFlow",
     tagline: "現代、輕量的 Windows 剪貼簿歷史工具。",
@@ -176,6 +186,16 @@ const I18N: Record<string, Record<string, string>> = {
     pinLimitReached: "Maximum 10 pinned Clips",
     nothingToUndo: "Nothing to undo",
     hotkeyInvalid: "Invalid hotkey format",
+    // Preview
+    previewTypeText: "Text",
+    previewTypeImage: "Image",
+    previewTypeFiles: "Files",
+    previewSource: "Source",
+    previewCaptured: "Captured",
+    previewSize: "Size",
+    previewEmpty: "(no content)",
+    previewTruncatedSizes: "Content truncated: only the opening portion was saved ({saved} saved, {original} original). The full content cannot be recovered.",
+    previewTruncatedNoSizes: "Content truncated: only the opening portion was saved. The full content cannot be recovered.",
     // About
     aboutTitle: "About ClipFlow",
     tagline: "A modern, lightweight clipboard history tool for Windows.",

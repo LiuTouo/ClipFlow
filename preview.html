@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClipFlow Preview</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="preview-body">
+    <div id="preview-panel">
+      <header class="preview-header">
+        <span class="preview-kind" id="preview-kind">文字</span>
+      </header>
+      <div class="preview-warning hidden" id="preview-warning" role="alert"></div>
+      <div class="preview-content" id="preview-content"></div>
+      <footer class="preview-meta">
+        <div class="preview-meta-row">
+          <span class="preview-meta-label" data-i18n="previewSource">來源</span>
+          <span class="preview-meta-value" id="preview-source"></span>
+        </div>
+        <div class="preview-meta-row">
+          <span class="preview-meta-label" data-i18n="previewCaptured">擷取時間</span>
+          <span class="preview-meta-value" id="preview-captured"></span>
+        </div>
+        <div class="preview-meta-row">
+          <span class="preview-meta-label" data-i18n="previewSize">大小</span>
+          <span class="preview-meta-value" id="preview-size"></span>
+        </div>
+      </footer>
+    </div>
+    <script type="module" src="/src/preview.ts" defer></script>
+  </body>
+</html>
