@@ -44,6 +44,9 @@ let hoveredClipId: string | null = null;
 let spacePressed = false;
 let pointerOverPreview = false;
 let previewHideTimer: ReturnType<typeof setTimeout> | null = null;
+// Whether the search box had focus when the Hover+Space preview latched.
+// Used to restore focus on release only when it was focused before preview.
+let searchFocusedBeforePreview = false;
 
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
 const filterBar = document.getElementById("filter-bar")!;
@@ -171,8 +174,7 @@ async function init() {
     }
   });
   await listen("clip-preview-space-released", () => {
-    spacePressed = false;
-    hidePreview();
+    resetPreview(true);
   });
 }
 
@@ -581,9 +583,27 @@ function resetLocalPreviewState() {
   cancelPreviewHide();
 }
 
-function resetPreview() {
+/** Restore search focus after the preview latch clears, only when the search
+ * box was focused before preview and no other control/window took focus.
+ * Deferred to a microtask so the released Space keyup is fully processed first
+ * and cannot insert into the freshly-focused input. */
+function restoreSearchFocus() {
+  queueMicrotask(() => {
+    const active = document.activeElement;
+    if (active && active !== searchInput && active !== document.body && active !== document.documentElement) {
+      return; // another control intentionally holds focus
+    }
+    if (!document.hasFocus()) return; // panel no longer the active window
+    searchInput.focus();
+  });
+}
+
+function resetPreview(restoreFocus = false) {
+  const restore = restoreFocus && searchFocusedBeforePreview;
   resetLocalPreviewState();
+  searchFocusedBeforePreview = false;
   hidePreview();
+  if (restore) restoreSearchFocus();
 }
 
 /** True when the event is the Spacebar, by physical code first (stable across
@@ -723,7 +743,7 @@ document.addEventListener("keydown", (e) => {
       // not fall through to closePanel and hide the history panel.
       if (spacePressed) {
         e.stopPropagation();
-        resetPreview();
+        resetPreview(true);
         return;
       }
       // If action menu is open, first Escape closes only the menu
@@ -777,14 +797,30 @@ window.addEventListener("keydown", (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
   spacePressed = true;
+  // The preview window is shown unfocused (backend `.focused(false)`), so the
+  // search box keeps window focus. Record whether it was focused and blur it
+  // so held-Space auto-repeat cannot type into it while the latch is active;
+  // focus is restored on release by resetPreview(true).
+  searchFocusedBeforePreview = document.activeElement === searchInput;
+  if (searchFocusedBeforePreview) searchInput.blur();
   showPreview(id);
 }, true);
 
 // Space keyup closes the preview regardless of where focus has moved.
 window.addEventListener("keyup", (e) => {
   if (isSpaceKey(e) && spacePressed) {
-    spacePressed = false;
-    hidePreview();
+    resetPreview(true);
+  }
+}, true);
+
+// Input-layer suppression: while the preview latch is active, block any
+// whitespace insertion into the (normally focused) search box. This catches
+// paths the keydown suppression cannot — auto-repeat, or a Space delivered
+// while focus is momentarily elsewhere — without erasing existing search text.
+window.addEventListener("beforeinput", (e) => {
+  if (!spacePressed) return;
+  if (e.inputType === "insertText" && (e.data == null || /^\s+$/.test(e.data))) {
+    e.preventDefault();
   }
 }, true);
 
