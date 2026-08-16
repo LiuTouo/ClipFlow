@@ -93,7 +93,7 @@ function render(payload: PreviewPayload) {
     ta.className = "preview-textarea";
     ta.readOnly = true;
     ta.spellcheck = false;
-    ta.wrap = "off";
+    ta.wrap = "soft";
     ta.value = payload.text_content || "";
     ta.placeholder = t("previewEmpty");
     contentEl.appendChild(ta);

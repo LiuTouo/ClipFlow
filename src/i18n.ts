@@ -50,6 +50,7 @@ const I18N: Record<string, Record<string, string>> = {
     rememberHistoryFilterHint: "關閉時每次開啟面板皆回到「全部」；開啟時在 ClipFlow 結束前會記住上次選擇的過濾器。",
     // Panel
     searchPlaceholder: "搜尋剪貼簿歷史…",
+    searchShortcutHint: "按 / 聚焦搜尋",
     emptyTitle: "尚無剪貼簿歷史",
     emptyHint: "複製一些內容就會出現在這裡",
     noResults: "無符合的項目",
@@ -155,6 +156,7 @@ const I18N: Record<string, Record<string, string>> = {
     rememberHistoryFilterHint: "When off, the panel resets to \"All\" each time it opens. When on, the last filter is remembered until ClipFlow exits.",
     // Panel
     searchPlaceholder: "Search clipboard history...",
+    searchShortcutHint: "Press / to focus search",
     emptyTitle: "No clipboard history yet",
     emptyHint: "Copy something to get started",
     noResults: "No matching clips",

@@ -10,7 +10,9 @@
     <div id="panel">
       <div class="search-container">
         <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="search-input" type="text" placeholder="搜尋剪貼簿歷史…" data-i18n-placeholder="searchPlaceholder" spellcheck="false" />
+        <input id="search-input" type="text" placeholder="搜尋剪貼簿歷史…" data-i18n-placeholder="searchPlaceholder" spellcheck="false" aria-describedby="search-shortcut-hint" />
+        <kbd class="search-keycap" aria-hidden="true">/</kbd>
+        <span id="search-shortcut-hint" class="sr-only" data-i18n="searchShortcutHint">按 / 聚焦搜尋</span>
       </div>
       <div id="filter-bar" role="group" aria-label="Filter by type">
         <button class="filter-btn active" data-filter="all" aria-pressed="true">

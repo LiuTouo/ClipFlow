@@ -238,6 +238,31 @@ html, body {
   font-weight: var(--font-weight-normal);
 }
 
+.search-keycap {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-raised);
+  color: var(--text-tertiary);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-primary);
+  line-height: 1;
+  box-shadow: var(--shadow-xs);
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.search-container:focus-within .search-keycap {
+  opacity: 0;
+}
+
 /* === Filter Bar === */
 #filter-bar {
   display: flex;
@@ -1170,6 +1195,11 @@ textarea:focus-visible {
   resize: none;
   user-select: text;
   -webkit-user-select: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .preview-textarea::placeholder {
