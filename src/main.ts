@@ -277,6 +277,7 @@ function render() {
     const el = document.createElement("div");
     el.className = `clip-item${clip.truncated ? " truncated" : ""}${index === selectedIndex ? " selected" : ""}`;
     el.dataset.index = String(index);
+    el.dataset.clipId = clip.id;
 
     // Click row body = paste. Action buttons stop propagation.
     el.addEventListener("click", () => {
@@ -585,6 +586,22 @@ function resetPreview() {
   hidePreview();
 }
 
+/** True when the event is the Spacebar, by physical code first (stable across
+ * layouts and modifiers) with the standard key value as a fallback. */
+function isSpaceKey(e: KeyboardEvent): boolean {
+  return e.code === "Space" || e.key === " ";
+}
+
+/** Clip id of the live row currently under the pointer, or null. Reads the
+ * live :hover state rather than the hoveredClipId variable, so a re-render
+ * that rebuilt the rows under a stationary cursor can't leave a stale value in
+ * either direction (a row under the pointer with no pointerenter, or a row
+ * that's gone with a lingering pointerleave). */
+function hoveredRowId(): string | null {
+  const row = clipList.querySelector<HTMLElement>(".clip-item:hover");
+  return row?.dataset.clipId ?? null;
+}
+
 // === Toast ===
 function showToast(message: string, onUndo?: () => void) {
   if (toastTimer) clearTimeout(toastTimer);
@@ -739,25 +756,28 @@ document.addEventListener("keydown", (e) => {
 });
 
 // Hover+Space: capture Space before the search input or the vim/char handler
-// above sees it. Only intercept when a row is hovered — otherwise Space
-// falls through and types normally.
-document.addEventListener("keydown", (e) => {
-  if (e.key !== " ") return;
-  const id = hoveredClipId;
+// below sees it. Intercepts only when a live row is under the pointer —
+// otherwise Space falls through and types normally. Registered on window
+// (earliest capture phase) so no listener registration order can slip ahead.
+window.addEventListener("keydown", (e) => {
+  if (!isSpaceKey(e)) return;
+  const id = hoveredRowId();
   if (!id) return;
   e.preventDefault();
   e.stopImmediatePropagation();
+  // Held Space auto-repeats keydown; block the character but don't re-invoke
+  // show. A newly hovered row while Space stays held re-shows immediately via
+  // the row's pointerenter handler.
+  if (e.repeat) return;
   if (!spacePressed) {
     spacePressed = true;
     showPreview(id);
   }
-  // Repeat is ignored here: a newly hovered row while Space stays held
-  // re-shows immediately via the row's pointerenter handler.
 }, true);
 
 // Space keyup closes the preview regardless of where focus has moved.
-document.addEventListener("keyup", (e) => {
-  if (e.key === " " && spacePressed) {
+window.addEventListener("keyup", (e) => {
+  if (isSpaceKey(e) && spacePressed) {
     spacePressed = false;
     hidePreview();
   }
