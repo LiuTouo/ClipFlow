@@ -4,6 +4,12 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.5.5] - 2026-08-16
+
+### Fixed
+
+- 安裝版更新失敗：更新時未先關閉執行中的 ClipFlow，導致安裝檔寫入被鎖住的執行檔而失敗、需手動關閉後重試。現於 NSIS 安裝／解除安裝前自動強制結束執行中的 clipflow.exe，再進行寫入
+
 ## [0.5.4] - 2026-08-16
 
 ### Added
@@ -229,6 +235,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.5.5]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.1...v0.5.2
