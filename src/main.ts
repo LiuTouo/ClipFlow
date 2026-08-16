@@ -716,6 +716,15 @@ document.addEventListener("keydown", (e) => {
   const inFilter = document.activeElement instanceof HTMLElement
     && document.activeElement.closest("#filter-bar");
 
+  // '/' focuses the search box from anywhere outside an editable control
+  // (only search itself here), where '/' types normally. preventDefault stops
+  // the '/' from being delivered into the newly-focused input.
+  if (e.key === "/" && !inSearch) {
+    e.preventDefault();
+    searchInput.focus();
+    return;
+  }
+
   // Filter bar: ArrowLeft / ArrowRight move between filter buttons
   if (inFilter) {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
@@ -726,8 +735,8 @@ document.addEventListener("keydown", (e) => {
         ? (currentIdx - 1 + buttons.length) % buttons.length
         : (currentIdx + 1) % buttons.length;
       buttons[nextIdx].focus();
-      // Activate the filter directly — do NOT go through the click handler
-      // which calls searchInput.focus() and would steal focus from the bar.
+      // Activate the filter directly; setFilter() moves selection to the new
+      // filter's first item.
       const filter = buttons[nextIdx].dataset.filter as FilterKind;
       setFilter(filter);
       return;
@@ -789,11 +798,6 @@ document.addEventListener("keydown", (e) => {
       moveSelection(e.key === "j" ? 1 : -1);
       return;
     }
-    // Any printable character refocuses the search box; focusing during
-    // keydown lets Chromium deliver the char into the input.
-    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-      searchInput.focus();
-    }
   }
 });
 
@@ -852,16 +856,14 @@ searchInput.addEventListener("input", () => {
   render();
 });
 
-// Filter bar mouse click: activate the filter and move focus to search
-// so the user can type immediately (mouse intent). Keyboard arrow navigation
-// skips the focus move — it calls setFilter() directly from the keydown path.
+// Filter bar mouse click: activate the filter. Focus stays on the clicked
+// button; only a direct search click or the '/' shortcut moves it to search.
 filterBar.addEventListener("click", (e) => {
   const btn = (e.target as HTMLElement).closest(".filter-btn") as HTMLButtonElement | null;
   if (!btn) return;
   const filter = btn.dataset.filter as FilterKind;
   if (filter && filter !== activeFilter) {
     setFilter(filter);
-    searchInput.focus();
   }
 });
 
