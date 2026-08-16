@@ -761,18 +761,23 @@ document.addEventListener("keydown", (e) => {
 // (earliest capture phase) so no listener registration order can slip ahead.
 window.addEventListener("keydown", (e) => {
   if (!isSpaceKey(e)) return;
+  // Latched: once the initial Space was captured, every Space keydown until
+  // keyup is swallowed unconditionally — held-Space auto-repeat must never
+  // type into search even after the preview window steals focus or the row's
+  // :hover state drops. A newly hovered row while held re-shows via the row's
+  // pointerenter handler, not here.
+  if (spacePressed) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return;
+  }
+  if (e.repeat) return; // repeat never starts a fresh preview
   const id = hoveredRowId();
-  if (!id) return;
+  if (!id) return; // no live row — Space stays normal input
   e.preventDefault();
   e.stopImmediatePropagation();
-  // Held Space auto-repeats keydown; block the character but don't re-invoke
-  // show. A newly hovered row while Space stays held re-shows immediately via
-  // the row's pointerenter handler.
-  if (e.repeat) return;
-  if (!spacePressed) {
-    spacePressed = true;
-    showPreview(id);
-  }
+  spacePressed = true;
+  showPreview(id);
 }, true);
 
 // Space keyup closes the preview regardless of where focus has moved.
