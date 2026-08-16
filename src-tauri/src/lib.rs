@@ -6,8 +6,9 @@ mod startup;
 mod update;
 
 use history::HistoryStore;
-use models::{AppConfig, Clip, ClipboardUpdate};
+use models::{AppConfig, Clip, ClipKind, ClipboardUpdate, PreviewPayload};
 use persistence::Persistence;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
@@ -31,6 +32,12 @@ struct AppState {
     /// Hotkey-registration failure that opened Settings at startup, shown
     /// inline there (CONTEXT: Hotkey conflict detection).
     startup_error: Arc<Mutex<Option<String>>>,
+    /// Active clip preview payload. Kept so a freshly loaded preview page can
+    /// call get_active_clip_preview and cannot miss the first update event.
+    preview: Arc<Mutex<Option<PreviewPayload>>>,
+    /// Monotonic preview-generation token. Every show and hide intent bumps it;
+    /// a show may display only while its claimed generation is still the newest.
+    preview_generation: Arc<AtomicU64>,
 }
 
 /// Handles to the tray menu items, kept so their labels can be re-localized
@@ -382,6 +389,129 @@ fn copy_only_files(text: String) -> Result<String, String> {
     clipboard::write_files_to_clipboard_from_text(&text)
 }
 
+/// Build the serializable preview payload for one Clip. For Image entries the
+/// stored DIB is decoded and re-encoded as a bounded display-only JPEG data
+/// URL — done here, outside any AppState/HistoryStore lock (see the caller).
+fn build_preview_payload(clip: Clip) -> Result<PreviewPayload, String> {
+    let image_preview_base64 = if clip.kind == ClipKind::Image {
+        let dib = clip
+            .image_data
+            .as_deref()
+            .ok_or_else(|| "Image data missing".to_string())?;
+        Some(clipboard::generate_preview_data_url(dib)?)
+    } else {
+        None
+    };
+    Ok(PreviewPayload {
+        id: clip.id,
+        kind: clip.kind,
+        text_content: clip.text_content,
+        image_preview_base64,
+        truncated: clip.truncated,
+        byte_size: clip.byte_size,
+        captured_at: clip.captured_at,
+        source_exe: clip.source_exe,
+        source_title: clip.source_title,
+    })
+}
+
+/// True when a show whose generation is `mine` is still the newest intent
+/// (`now` has not advanced past it). A later show or hide bumps the shared
+/// generation and supersedes every earlier claim.
+fn show_is_current(now: u64, mine: u64) -> bool {
+    now == mine
+}
+
+#[tauri::command]
+async fn show_clip_preview(
+    id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // Claim a fresh generation before any work. Heavy DIB/JPEG/base64 work
+    // below runs on the async runtime (off the UI main thread); a later show
+    // or hide bumps the generation and supersedes us. SeqCst gives one total
+    // order over every show/hide intent, which is exactly what latest-wins
+    // needs — and is negligible for a token bumped a few times per interaction.
+    let generation = state.preview_generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+    // Clone a single Clip (never get_all), then release the history lock
+    // before image decode.
+    let clip = lock(&state.history)
+        .get_clip(&id)
+        .ok_or_else(|| "Clip not found".to_string())?;
+
+    let payload = build_preview_payload(clip)?;
+
+    commit_preview_on_main_thread(&app, generation, payload).await
+}
+
+/// Commit a prepared preview to the UI on the Tauri main thread and hand the
+/// result back to the awaiting async command. Heavy work stays off the main
+/// thread; only this one non-blocking closure runs there, so its generation
+/// re-check and window mutation are ordered with respect to every other
+/// main-thread task (and to the hide/clear ordering).
+async fn commit_preview_on_main_thread(
+    app: &tauri::AppHandle,
+    generation: u64,
+    payload: PreviewPayload,
+) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let state = handle.state::<AppState>();
+        // Re-check the generation before any window mutation: a superseded
+        // show completes as a no-op.
+        if !show_is_current(state.preview_generation.load(Ordering::SeqCst), generation) {
+            let _ = tx.send(Ok(()));
+            return;
+        }
+        let _ = tx.send(commit_preview_window(&handle, generation, &payload));
+    })
+    .map_err(|e| format!("run_on_main_thread failed: {:?}", e))?;
+
+    rx.await
+        .map_err(|_| "preview commit channel closed".to_string())?
+}
+
+/// Perform the current-generation preview commit on the main thread: create or
+/// reuse the window, position it, set the active payload, emit the update
+/// event, then show it. Must only run on the main thread — its position
+/// getters resolve inline there, so it never blocks on the main loop.
+fn commit_preview_window(
+    app: &tauri::AppHandle,
+    generation: u64,
+    payload: &PreviewPayload,
+) -> Result<(), String> {
+    let window = get_or_create_preview_window(app)?;
+    position_preview(app, &window)?;
+
+    let state = app.state::<AppState>();
+    *lock(&state.preview) = Some(payload.clone());
+    // Event emission is best-effort: the active payload covers a listener that
+    // races page load.
+    let _ = app.emit("clip-preview-updated", payload);
+    if let Err(e) = window.show() {
+        // Clear the stale active payload only if we are still current, so a
+        // concurrent hide/new show that already cleared or overwrote it wins.
+        if show_is_current(state.preview_generation.load(Ordering::SeqCst), generation) {
+            *lock(&state.preview) = None;
+        }
+        return Err(format!("preview window show failed: {:?}", e));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_clip_preview(app: tauri::AppHandle) {
+    hide_preview_window(&app);
+}
+
+#[tauri::command]
+fn get_active_clip_preview(state: tauri::State<AppState>) -> Option<PreviewPayload> {
+    lock(&state.preview).clone()
+}
+
 /// True while `now` is still inside the debounce window of the last capture.
 fn within_debounce(now: u64, last_capture_ts: u64, debounce_ms: u64) -> bool {
     now.saturating_sub(last_capture_ts) < debounce_ms
@@ -561,6 +691,88 @@ fn log(msg: &str) {
     let _ = msg;
 }
 
+/// Preview window sizing/positioning constants, in logical pixels. The main
+/// window is a 480x620 transparent host whose visual panel sits at logical
+/// offset (30, 30) with width 420; the preview attaches beside that panel.
+const PANEL_OFFSET: i32 = 30;
+const PANEL_WIDTH: i32 = 420;
+const PREVIEW_GAP: i32 = 8;
+/// Preferred logical size of the preview UI window. Distinct from the image
+/// preview JPEG bound (720x480), which lives inside generate_preview_data_url.
+const PREVIEW_WINDOW_W: u32 = 360;
+const PREVIEW_WINDOW_H: u32 = 540;
+
+/// Computed preview window placement, all in physical pixels.
+struct PreviewPlacement {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+/// Pure positioning math for the clip-preview window. Inputs: the main
+/// window's physical outer position, its scale factor, and the current
+/// monitor's physical work area; plus the logical panel offset/width, the
+/// logical gap, and the logical preferred preview size. Output is the preview
+/// window's physical (x, y) and size.
+///
+/// Rules: right of the panel preferred, left fallback; width clamped to the
+/// available side space; fully clamped into the work area; top aligned with
+/// the panel top; never overlaps the panel.
+fn place_preview(
+    main_pos: (i32, i32),
+    scale: f64,
+    work_area: (i32, i32, u32, u32),
+    panel_offset: i32,
+    panel_width: i32,
+    gap: i32,
+    content_width: u32,
+    content_height: u32,
+) -> PreviewPlacement {
+    let to_phys = |v: i32| -> i32 { ((v as f64) * scale).round() as i32 };
+
+    let (mx, my) = main_pos;
+    let (wx, wy, ww, wh) = work_area;
+    let work_right = wx + ww as i32;
+    let work_bottom = wy + wh as i32;
+
+    let panel_left = mx + to_phys(panel_offset);
+    let panel_right = panel_left + to_phys(panel_width);
+    let panel_top = my + to_phys(panel_offset);
+
+    let pref_w = to_phys(content_width as i32).max(1) as u32;
+    let pref_h = to_phys(content_height as i32).max(1) as u32;
+    let gap_px = to_phys(gap);
+
+    // Available horizontal space on each side (physical), never negative.
+    let right_avail = (work_right - panel_right - gap_px).max(0) as u32;
+    let left_avail = (panel_left - wx - gap_px).max(0) as u32;
+
+    // Right preferred; left fallback; if neither fits, the side with more room
+    // (ties to the right) and the width is clamped.
+    let use_right = right_avail >= pref_w || right_avail >= left_avail;
+    let avail = if use_right { right_avail } else { left_avail };
+    let width = pref_w.min(avail).max(1);
+
+    // Height clamped to what fits below the panel top within the work area.
+    let max_h = (work_bottom - panel_top).max(0) as u32;
+    let height = pref_h.min(max_h).max(1);
+
+    let x = if use_right {
+        panel_right + gap_px
+    } else {
+        panel_left - gap_px - width as i32
+    };
+    let y = panel_top.clamp(wy, (work_bottom - height as i32).max(wy));
+
+    PreviewPlacement {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
 /// Pure coordinate math: compute the i32 (x, y) that centers window of
 /// `win_size` inside a monitor at `mon_pos` with `mon_size`.
 ///
@@ -666,9 +878,18 @@ fn show_panel(app: &tauri::AppHandle) {
                             armed_for_event.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         tauri::WindowEvent::Focused(false) => {
+                            // Focus may have moved to the attached preview, not
+                            // away from the composite group: defer to a delayed
+                            // re-check that dismisses only when NEITHER window
+                            // owns focus.
                             if armed_for_event.load(std::sync::atomic::Ordering::Relaxed) {
-                                hide_panel(&app_handle);
+                                schedule_focus_group_check(&app_handle);
                             }
+                        }
+                        tauri::WindowEvent::Destroyed => {
+                            // A destroyed main window must not strand a visible
+                            // preview.
+                            hide_preview_window(&app_handle);
                         }
                         _ => {}
                     }
@@ -692,6 +913,118 @@ fn hide_panel(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
+    // The preview is an attached part of the panel: hiding the panel (paste,
+    // toggle, focus loss) must never leave the preview visible.
+    hide_preview_window(app);
+}
+
+/// Hide only the clip-preview window and clear its active payload. Never
+/// touches the main panel. Bumps the generation first so any in-flight show
+/// that has not yet committed sees a stale generation and no-ops. No operation
+/// lock: the show commit is serialized on the main thread, so a hide intent
+/// either lands before it (making it stale) or after it (and hides it).
+fn hide_preview_window(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    state.preview_generation.fetch_add(1, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("clip-preview") {
+        let _ = window.hide();
+    }
+    *lock(&state.preview) = None;
+}
+
+/// Main + preview are one composite focus group. On focus loss, sleep briefly
+/// off-thread (the OS focus transition to/from the preview is not
+/// instantaneous), then run the actual focus queries and hide decision on the
+/// Tauri main thread. The delay closes the race where the main window's
+/// Focused(false) fired because the preview just took focus.
+fn schedule_focus_group_check(app: &tauri::AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let handle = app.clone();
+        if let Err(e) = app.run_on_main_thread(move || {
+            let focused = |label: &str| {
+                handle
+                    .get_webview_window(label)
+                    .and_then(|w| w.is_focused().ok())
+                    .unwrap_or(false)
+            };
+            if !focused("main") && !focused("clip-preview") {
+                hide_panel(&handle);
+            }
+        }) {
+            log(&format!("[ClipFlow] run_on_main_thread failed: {:?}", e));
+        }
+    });
+}
+
+/// Lazily create (or reuse) the attached clip-preview window. The window is
+/// created hidden and unfocused so hover alone never steals focus; explicit
+/// pointer interaction may focus it. Returns Err when creation fails.
+fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    if let Some(w) = app.get_webview_window("clip-preview") {
+        return Ok(w);
+    }
+
+    let w = WebviewWindowBuilder::new(app, "clip-preview", WebviewUrl::App("preview.html".into()))
+        .title("ClipFlow Preview")
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .resizable(false)
+        .inner_size(PREVIEW_WINDOW_W as f64, PREVIEW_WINDOW_H as f64)
+        .visible(false)
+        .focused(false)
+        .build()
+        .map_err(|e| format!("preview window creation failed: {:?}", e))?;
+    // Preview owns focus only through explicit pointer interaction; losing it
+    // must not dismiss the pair while main still has focus, so route through
+    // the same composite re-check.
+    let app_handle = app.clone();
+    w.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(false) = event {
+            schedule_focus_group_check(&app_handle);
+        }
+    });
+    Ok(w)
+}
+
+/// Position the preview window beside the visual main panel (main outer
+/// position + panel offset), and size it to the available side space.
+fn position_preview(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let main_pos = main
+        .outer_position()
+        .map_err(|e| format!("main outer_position failed: {:?}", e))?;
+    let scale = main.scale_factor().unwrap_or(1.0);
+    let monitor = main
+        .current_monitor()
+        .map_err(|e| format!("current_monitor failed: {:?}", e))?
+        .ok_or_else(|| "no monitor".to_string())?;
+    let wa = monitor.work_area();
+    let placement = place_preview(
+        (main_pos.x, main_pos.y),
+        scale,
+        (wa.position.x, wa.position.y, wa.size.width, wa.size.height),
+        PANEL_OFFSET,
+        PANEL_WIDTH,
+        PREVIEW_GAP,
+        PREVIEW_WINDOW_W,
+        PREVIEW_WINDOW_H,
+    );
+    window
+        .set_size(tauri::PhysicalSize::new(placement.width, placement.height))
+        .map_err(|e| format!("preview set_size failed: {:?}", e))?;
+    window
+        .set_position(tauri::PhysicalPosition::new(placement.x, placement.y))
+        .map_err(|e| format!("preview set_position failed: {:?}", e))?;
+    Ok(())
 }
 
 fn toggle_panel(app: &tauri::AppHandle) {
@@ -774,6 +1107,8 @@ pub fn run(_hidden: bool) {
             persistence: persistence.clone(),
             tray_items: tray_items.clone(),
             startup_error: startup_error.clone(),
+            preview: Arc::new(Mutex::new(None)),
+            preview_generation: Arc::new(AtomicU64::new(0)),
         })
         .setup(move |app| {
             let resource_dir = app.path().resource_dir().unwrap_or_default();
@@ -901,6 +1236,9 @@ pub fn run(_hidden: bool) {
             copy_only_image,
             paste_files,
             copy_only_files,
+            show_clip_preview,
+            hide_clip_preview,
+            get_active_clip_preview,
             update::update_channel,
             update::check_for_updates,
             update::install_update,
@@ -1113,5 +1451,103 @@ mod center_coords_tests {
         assert!(x >= i32::MAX - 100);
         assert!(y >= i32::MIN);
         assert!(y <= i32::MIN + 1000);
+    }
+}
+
+#[cfg(test)]
+mod preview_placement_tests {
+    use super::place_preview;
+
+    fn place(
+        main_pos: (i32, i32),
+        scale: f64,
+        work_area: (i32, i32, u32, u32),
+    ) -> super::PreviewPlacement {
+        place_preview(main_pos, scale, work_area, 30, 420, 8, 360, 540)
+    }
+
+    #[test]
+    fn right_side_when_space_available() {
+        let p = place((100, 100), 1.0, (0, 0, 1920, 1080));
+        // panel: left 130, right 550, top 130. gap 8. right fits 360.
+        assert_eq!(p.x, 558);
+        assert_eq!(p.y, 130);
+        assert_eq!(p.width, 360);
+        assert_eq!(p.height, 540);
+        // Never overlaps the panel.
+        assert!(p.x >= 550);
+    }
+
+    #[test]
+    fn left_fallback_when_right_is_short() {
+        // panel right edge at work right (1600), so no room on the right.
+        let p = place((1150, 100), 1.0, (0, 0, 1600, 900));
+        // panel left 1180, right 1600. left avail 1172 >= 360 → left.
+        assert_eq!(p.width, 360);
+        assert_eq!(p.x, 1180 - 8 - 360); // 812
+        assert!(p.x + p.width as i32 <= 1180); // no overlap
+    }
+
+    #[test]
+    fn width_clamped_to_available_side_space() {
+        // 1024 monitor, main centered: panel left 302, right 722.
+        let p = place(((1024 - 480) / 2, 100), 1.0, (0, 0, 1024, 768));
+        // right avail = 1024 - 722 - 8 = 294 (< 360). Preferred right.
+        assert_eq!(p.x, 722 + 8); // 730
+        assert_eq!(p.width, 294);
+        assert_eq!(p.x + p.width as i32, 1024); // clamped flush to work right
+    }
+
+    #[test]
+    fn dpi_scale_applies_to_panel_and_preview() {
+        let p = place((100, 100), 1.5, (0, 0, 1920, 1080));
+        // 30*1.5=45 → panel left 145, right 775. 360*1.5=540, 540*1.5=810, gap 12.
+        assert_eq!(p.x, 775 + 12);
+        assert_eq!(p.width, 540);
+        assert_eq!(p.height, 810);
+        assert_eq!(p.y, 145);
+    }
+
+    #[test]
+    fn height_clamped_to_work_area_bottom() {
+        let p = place((100, 700), 1.0, (0, 0, 1920, 800));
+        // panel top 730; only 70px to work bottom.
+        assert_eq!(p.y, 730);
+        assert_eq!(p.height, 70);
+    }
+
+    #[test]
+    fn top_aligned_and_never_overlapping() {
+        let p = place((100, 100), 1.0, (0, 0, 1920, 1080));
+        // Panel top is main_y + 30 = 130.
+        assert_eq!(p.y, 130);
+        // Panel occupies x in [130, 550]; preview starts after 550 + gap.
+        assert!(p.x >= 550);
+    }
+}
+
+#[cfg(test)]
+mod preview_generation_tests {
+    use super::show_is_current;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn fetch_add_yields_strictly_increasing_tokens() {
+        let gen = AtomicU64::new(0);
+        let a = gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let b = gen.fetch_add(1, Ordering::SeqCst) + 1;
+        assert_eq!((a, b), (1, 2));
+    }
+
+    #[test]
+    fn later_generation_supersedes_earlier_show() {
+        let gen = AtomicU64::new(0);
+        let first = gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let second = gen.fetch_add(1, Ordering::SeqCst) + 1;
+        // The first show is stale once the second intent lands.
+        assert!(!show_is_current(second, first));
+        // The newest intent is current; an unchanged token stays current.
+        assert!(show_is_current(second, second));
+        assert!(show_is_current(first, first));
     }
 }

@@ -96,6 +96,13 @@ impl HistoryStore {
         });
     }
 
+    /// One Clip by id, cloned (full, including image bytes) — for a single
+    /// entry's preview. A narrow clone: never go through get_all() to locate
+    /// one Clip's content.
+    pub fn get_clip(&self, id: &str) -> Option<Clip> {
+        self.clips.iter().find(|c| c.id == id).cloned()
+    }
+
     /// Raw image bytes for an Image Clip, checked by kind: a Text/File id
     /// gets "not an image" instead of a misleading "not found".
     pub fn get_clip_image(&self, id: &str) -> Result<Vec<u8>, String> {

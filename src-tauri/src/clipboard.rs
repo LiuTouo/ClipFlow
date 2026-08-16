@@ -424,6 +424,51 @@ fn generate_thumbnail(dib_data: &[u8]) -> Result<String, String> {
     ))
 }
 
+/// Display-only preview JPEG for a stored DIB, bounded to fit within 720x480
+/// while preserving aspect ratio and never cropping (or upscaling). This is a
+/// separate path from generate_thumbnail / capture: it re-uses the existing
+/// DIB decoder but targets a larger on-screen preview, and never touches the
+/// stored thumbnail format or the capture downscale path.
+pub fn generate_preview_data_url(dib_data: &[u8]) -> Result<String, String> {
+    use base64::Engine;
+    use image::GenericImageView;
+    use image::ImageEncoder;
+
+    let dyn_img = decode_clipboard_image(dib_data)?;
+
+    let (w, h) = dyn_img.dimensions();
+    if w == 0 || h == 0 {
+        return Err("empty image".to_string());
+    }
+    let max_w = 720u32;
+    let max_h = 480u32;
+    // Fit within the box: min of the two axis ratios, never above 1.0 so a
+    // smaller image is not blown up.
+    let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64).min(1.0);
+    let nw = ((w as f64 * scale).round() as u32).max(1);
+    let nh = ((h as f64 * scale).round() as u32).max(1);
+    let rgb = if scale >= 1.0 {
+        dyn_img.to_rgb8()
+    } else {
+        dyn_img.resize(nw, nh, image::imageops::FilterType::Lanczos3).to_rgb8()
+    };
+
+    let mut buf = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85)
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| format!("JPEG encode: {}", e))?;
+
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(buf)
+    ))
+}
+
 /// Decode a raw DIB (as stored on the clipboard for CF_DIB) into RGBA pixels.
 /// Handles the common cases: BITMAPINFOHEADER-or-later, 24/32 bpp, BI_RGB or
 /// BI_BITFIELDS. Alpha is honored only when a mask explicitly defines it —
@@ -981,5 +1026,55 @@ mod dib_tests {
     fn rejects_truncated_pixel_data() {
         let dib = dib_header(2, 2, 24); // header only, no pixel rows
         assert!(decode_dib(&dib).is_err());
+    }
+
+    #[test]
+    fn preview_data_url_fits_within_bounds_without_crop_or_upscale() {
+        use base64::Engine;
+        use image::GenericImageView;
+
+        // 800x500 bottom-up 24bpp DIB (8:5 aspect), solid color so JPEG is tiny.
+        let stride = (800 * 3 + 3) / 4 * 4;
+        let mut dib = dib_header(800, 500, 24);
+        let row = {
+            let mut r = Vec::with_capacity(stride);
+            for _ in 0..800 {
+                r.extend_from_slice(&[0, 0, 255]); // BGR red
+            }
+            r.resize(stride, 0);
+            r
+        };
+        for _ in 0..500 {
+            dib.extend_from_slice(&row);
+        }
+
+        let url = super::generate_preview_data_url(&dib).unwrap();
+        assert!(url.starts_with("data:image/jpeg;base64,"));
+
+        let b64 = &url["data:image/jpeg;base64,".len()..];
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let img = image::load_from_memory(&bytes).unwrap();
+        // 800:500 = 8:5 -> 720x450, aspect preserved, no crop, within bounds.
+        assert_eq!(img.dimensions(), (720, 450));
+    }
+
+    #[test]
+    fn preview_data_url_does_not_upscale_small_images() {
+        use base64::Engine;
+        use image::GenericImageView;
+
+        // 100x100 stays 100x100: "fit within" shrinks but never enlarges.
+        let stride = (100 * 3 + 3) / 4 * 4;
+        let mut dib = dib_header(100, 100, 24);
+        let row = vec![0u8; stride];
+        for _ in 0..100 {
+            dib.extend_from_slice(&row);
+        }
+
+        let url = super::generate_preview_data_url(&dib).unwrap();
+        let b64 = &url["data:image/jpeg;base64,".len()..];
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(img.dimensions(), (100, 100));
     }
 }

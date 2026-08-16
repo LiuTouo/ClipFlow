@@ -52,6 +52,24 @@ pub struct ClipboardUpdate {
     pub evicted: Vec<String>,
 }
 
+/// Payload of the `clip-preview-updated` event and the value returned by
+/// `get_active_clip_preview`. Carries everything the preview page needs to
+/// render one entry without ever crossing raw image bytes: Image entries get
+/// a bounded, display-only JPEG data URL; Text/FilePaths carry their stored
+/// text. Serialize-only, like Clip.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreviewPayload {
+    pub id: String,
+    pub kind: ClipKind,
+    pub text_content: Option<String>,
+    pub image_preview_base64: Option<String>,
+    pub truncated: bool,
+    pub byte_size: u64,
+    pub captured_at: u64,
+    pub source_exe: String,
+    pub source_title: String,
+}
+
 impl Clip {
     /// Generate a new unique ID based on content hash and timestamp.
     pub fn new_id(content_hash: &str, captured_at: u64) -> String {
