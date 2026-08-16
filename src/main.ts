@@ -47,6 +47,13 @@ let previewHideTimer: ReturnType<typeof setTimeout> | null = null;
 // Whether the search box had focus when the Hover+Space preview latched.
 // Used to restore focus on release only when it was focused before preview.
 let searchFocusedBeforePreview = false;
+// One-time onboarding hint: stays visible until the first successful preview.
+let previewHintSeen = false;
+// Fade-in timer for the per-row "hold to preview" hint (single hover at a time).
+let previewHintTimer: ReturnType<typeof setTimeout> | null = null;
+
+const PREVIEW_HINT_SEEN_KEY = "clipflow.previewHintSeen.v1";
+const PREVIEW_HINT_DELAY = 400;
 
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
 const filterBar = document.getElementById("filter-bar")!;
@@ -56,6 +63,7 @@ const emptyTitle = document.getElementById("empty-title")!;
 const emptyHint = document.getElementById("empty-hint")!;
 const toast = document.getElementById("toast")!;
 const actionMenu = document.getElementById("clip-action-menu")!;
+const previewHintStrip = document.getElementById("preview-hint-strip")!;
 
 // === Link classification ===
 /** True when text_content is trimmed to a single valid http/https URL. */
@@ -117,6 +125,7 @@ function sortClips() {
 async function init() {
   await refreshConfig();
   applyI18n();
+  previewHintSeen = readPreviewHintSeen();
 
   clips = await invoke("get_clips");
   selectedIndex = 0;
@@ -237,6 +246,11 @@ function render() {
 
   // Preserve the scroll position across the rebuild.
   const scrollTop = clipList.scrollTop;
+  // A pending row-hint fade-in targets a row about to be destroyed.
+  if (previewHintTimer) {
+    clearTimeout(previewHintTimer);
+    previewHintTimer = null;
+  }
   clipList.innerHTML = "";
 
   const searching = query.length > 0;
@@ -260,6 +274,7 @@ function render() {
   }
 
   updateFilterBar();
+  updatePreviewHintStrip();
 
   let hasPinned = false;
   let hasUnpinned = false;
@@ -282,6 +297,18 @@ function render() {
     el.dataset.index = String(index);
     el.dataset.clipId = clip.id;
 
+    // Right-side "hold to preview" hint (Space keycap + label), collapsed
+    // until the row is hovered. Non-interactive and never overlaps actions.
+    const hint = document.createElement("div");
+    hint.className = "clip-preview-hint";
+    const hintKeycap = document.createElement("kbd");
+    hintKeycap.className = "keycap";
+    hintKeycap.setAttribute("aria-hidden", "true");
+    hintKeycap.textContent = "Space";
+    const hintLabel = document.createElement("span");
+    hintLabel.textContent = t("holdToPreview");
+    hint.append(hintKeycap, hintLabel);
+
     // Click row body = paste. Action buttons stop propagation.
     el.addEventListener("click", () => {
       pasteClip(clip);
@@ -291,10 +318,12 @@ function render() {
     el.addEventListener("pointerenter", () => {
       hoveredClipId = clip.id;
       if (spacePressed) showPreview(clip.id);
+      scheduleRowHint(hint);
     });
     el.addEventListener("pointerleave", () => {
       if (hoveredClipId === clip.id) hoveredClipId = null;
       if (spacePressed) schedulePreviewHide();
+      clearRowHint(hint);
     });
 
     // Icon / Thumbnail
@@ -351,6 +380,9 @@ function render() {
 
     contentDiv.appendChild(meta);
     el.appendChild(contentDiv);
+
+    // Hint sits between content and time so it never crowds the actions.
+    el.appendChild(hint);
 
     // Time
     const time = document.createElement("span");
@@ -549,8 +581,74 @@ function cancelPreviewHide() {
 
 function showPreview(id: string) {
   cancelPreviewHide();
-  invoke("show_clip_preview", { id }).catch((err) => {
-    console.error("Failed to show preview:", err);
+  invoke("show_clip_preview", { id })
+    .then(() => {
+      markPreviewHintSeen();
+    })
+    .catch((err) => {
+      console.error("Failed to show preview:", err);
+    });
+}
+
+// === Preview discoverability hints ===
+function readPreviewHintSeen(): boolean {
+  try {
+    return localStorage.getItem(PREVIEW_HINT_SEEN_KEY) === "1";
+  } catch (err) {
+    console.error("Failed to read preview hint state:", err);
+    return false;
+  }
+}
+
+/** Toggle the one-time onboarding strip: visible only when a history row is
+ * shown and the hint has not yet been marked seen. */
+function updatePreviewHintStrip() {
+  const show = !previewHintSeen && visibleClips.length > 0;
+  previewHintStrip.classList.toggle("hidden", !show);
+}
+
+/** Persist the onboarding hint as seen after a successful preview show.
+ * localStorage failure must not break preview — it only leaves the hint
+ * visible for the next successful use. */
+function markPreviewHintSeen() {
+  if (previewHintSeen) return;
+  previewHintSeen = true;
+  try {
+    localStorage.setItem(PREVIEW_HINT_SEEN_KEY, "1");
+  } catch (err) {
+    console.error("Failed to persist preview hint state:", err);
+  }
+  updatePreviewHintStrip();
+}
+
+/** Fade in the row hint after the hover delay, unless the Space latch is
+ * already active. */
+function scheduleRowHint(hint: HTMLElement) {
+  clearRowHint(hint);
+  if (spacePressed) return;
+  previewHintTimer = setTimeout(() => {
+    previewHintTimer = null;
+    hint.classList.add("visible");
+  }, PREVIEW_HINT_DELAY);
+}
+
+/** Cancel the pending fade-in and hide the hint immediately. */
+function clearRowHint(hint: HTMLElement) {
+  if (previewHintTimer) {
+    clearTimeout(previewHintTimer);
+    previewHintTimer = null;
+  }
+  hint.classList.remove("visible");
+}
+
+/** Hide every row hint at once (on Space latch activation). */
+function hideAllRowHints() {
+  if (previewHintTimer) {
+    clearTimeout(previewHintTimer);
+    previewHintTimer = null;
+  }
+  clipList.querySelectorAll(".clip-preview-hint.visible").forEach((el) => {
+    el.classList.remove("visible");
   });
 }
 
@@ -823,6 +921,7 @@ window.addEventListener("keydown", (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
   spacePressed = true;
+  hideAllRowHints();
   // The preview window is shown unfocused (backend `.focused(false)`), so the
   // search box keeps window focus. Record whether it was focused and blur it
   // so held-Space auto-repeat cannot type into it while the latch is active;

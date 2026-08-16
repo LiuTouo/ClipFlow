@@ -92,6 +92,9 @@ const I18N: Record<string, Record<string, string>> = {
     previewEmpty: "（無內容）",
     previewTruncatedSizes: "內容已截斷：僅保存開頭部分（已保存 {saved}，原始 {original}），完整內容無法復原。",
     previewTruncatedNoSizes: "內容已截斷：僅保存開頭部分，完整內容無法復原。",
+    previewHintBefore: "將滑鼠移到項目上，按住",
+    previewHintAfter: "預覽完整內容",
+    holdToPreview: "按住預覽",
     // About
     aboutTitle: "關於 ClipFlow",
     tagline: "現代、輕量的 Windows 剪貼簿歷史工具。",
@@ -198,6 +201,9 @@ const I18N: Record<string, Record<string, string>> = {
     previewEmpty: "(no content)",
     previewTruncatedSizes: "Content truncated: only the opening portion was saved ({saved} saved, {original} original). The full content cannot be recovered.",
     previewTruncatedNoSizes: "Content truncated: only the opening portion was saved. The full content cannot be recovered.",
+    previewHintBefore: "Point at an item and hold",
+    previewHintAfter: "to preview its full content",
+    holdToPreview: "Hold to preview",
     // About
     aboutTitle: "About ClipFlow",
     tagline: "A modern, lightweight clipboard history tool for Windows.",

@@ -238,7 +238,8 @@ html, body {
   font-weight: var(--font-weight-normal);
 }
 
-.search-keycap {
+.search-keycap,
+.keycap {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -466,6 +467,52 @@ html, body {
 
 .clip-action-btn.more-btn:hover {
   background: var(--bg-active);
+}
+
+/* === Preview Hint (onboarding strip + per-row contextual hint) === */
+.preview-hint-strip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--accent-subtle);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-normal);
+  pointer-events: none;
+}
+
+.preview-hint-strip.hidden {
+  display: none;
+}
+
+/* Collapsed (max-width:0 + overflow:hidden) so it reserves no row space
+   until shown; opacity fades in on hover, out immediately on leave. */
+.clip-preview-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 0;
+  margin-left: 0;
+  padding: 2px 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  pointer-events: none;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-normal);
+  transition: opacity 0.15s ease, max-width 0.15s ease;
+}
+
+.clip-preview-hint.visible {
+  max-width: 160px;
+  margin-left: 6px;
+  opacity: 1;
 }
 
 /* === Action Menu === */
