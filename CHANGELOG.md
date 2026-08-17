@@ -4,6 +4,12 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.6.2] - 2026-08-18
+
+### Added
+
+- 安裝程式背景自動更新防護：當 Mnemark NSIS 安裝程式以 `/UPDATE` 模式執行且偵測到舊版 ClipFlow 解除安裝紀錄時，改為顯示重新下載的更名提示（內含下載網址，並詢問是否開啟下載頁面；選「是」以 ShellExec 開啟網址），無論選擇與否皆中止跨品牌自動更新、保留舊版 ClipFlow 安裝；不影響全新安裝、用於遷移 ClipFlow 的手動 Mnemark 安裝程式，以及未來的 Mnemark-to-Mnemark 自動更新
+
 ## [0.6.1] - 2026-08-18
 
 ### Fixed
@@ -278,6 +284,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.6.2]: https://github.com/LiuTouo/Mnemark/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/LiuTouo/Mnemark/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/LiuTouo/Mnemark/compare/v0.5.7...v0.6.0
 [0.5.7]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.6...v0.5.7
