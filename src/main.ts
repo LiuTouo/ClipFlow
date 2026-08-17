@@ -51,7 +51,8 @@ let previewHintSeen = false;
 // Fade-in timer for the per-row preview hint (single hover at a time).
 let previewHintTimer: ReturnType<typeof setTimeout> | null = null;
 
-const PREVIEW_HINT_SEEN_KEY = "clipflow.previewHintSeen.v1";
+const PREVIEW_HINT_SEEN_KEY = "mnemark.previewHintSeen.v1";
+const LEGACY_PREVIEW_HINT_SEEN_KEY = "clipflow.previewHintSeen.v1";
 const PREVIEW_HINT_DELAY = 400;
 
 const searchInput = document.getElementById("search-input") as HTMLInputElement;
@@ -671,7 +672,17 @@ function showPreview(id: string) {
 // === Preview discoverability hints ===
 function readPreviewHintSeen(): boolean {
   try {
-    return localStorage.getItem(PREVIEW_HINT_SEEN_KEY) === "1";
+    // One-time migration from the legacy ClipFlow key: prefer the new key,
+    // else adopt the legacy value, then drop the legacy key.
+    const current = localStorage.getItem(PREVIEW_HINT_SEEN_KEY);
+    if (current !== null) return current === "1";
+    const legacy = localStorage.getItem(LEGACY_PREVIEW_HINT_SEEN_KEY);
+    if (legacy !== null) {
+      localStorage.setItem(PREVIEW_HINT_SEEN_KEY, legacy);
+      localStorage.removeItem(LEGACY_PREVIEW_HINT_SEEN_KEY);
+      return legacy === "1";
+    }
+    return false;
   } catch (err) {
     console.error("Failed to read preview hint state:", err);
     return false;

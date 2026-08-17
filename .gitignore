@@ -27,5 +27,14 @@ dist-ssr
 src-tauri/target/
 
 # Runtime data (generated per user)
+mnemark.config.json
+mnemark.db
+# Legacy ClipFlow data retained by the one-time migration (recoverable backup)
 clipflow.config.json
 clipflow.db
+
+# Local agent tooling
+.agent-skills-tmp/
+.claude/
+.search-focus-report.md
+CLAUDE.md

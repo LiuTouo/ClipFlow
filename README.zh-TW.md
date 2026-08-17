@@ -1,17 +1,19 @@
-# ClipFlow
+# Mnemark
 
 **[English](README.md) | [繁體中文](README.zh-TW.md)**
 
 <p align="center">
-  <img src="clipflow_icon.svg" alt="ClipFlow" width="128" />
+  <img src="mnemark_icon.svg" alt="Mnemark" width="128" />
 </p>
 
 <p align="center">
-  <strong>輕量的 Windows 剪貼簿歷史工具。</strong><br />
-  <sub>快速取用文字、圖片與已複製的檔案，不打斷工作流程。</sub>
+  <strong>Find anything you've copied.</strong>（找到任何你複製過的內容。）<br />
+  <sub>發音 /ˈniː.mɑːrk/ — “NEE-mark”。名稱結合 <em>mneme</em>（記憶）與 <em>mark</em>（標記）。</sub>
 </p>
 
-ClipFlow 是使用 Tauri 2 開發的 Windows 10／11 剪貼簿管理工具。按下全域快捷鍵即可開啟精簡的浮動面板，搜尋近期內容，再貼回原本使用的應用程式。
+你複製的每一件事都會留下痕跡——Mnemark 讓這些痕跡可被搜尋，讓你能隨時找回曾複製過的內容。
+
+Mnemark 是使用 Tauri 2 開發的 Windows 10／11 剪貼簿管理工具。按下全域快捷鍵即可開啟精簡的浮動面板，搜尋近期內容，再貼回原本使用的應用程式。
 
 專案提供支援背景更新的 NSIS 安裝版，以及免安裝、不寫入登錄檔的可攜版執行檔。
 
@@ -39,11 +41,11 @@ Windows 11 與多數已更新的 Windows 10 已包含 WebView2。精簡版或 LT
 
 ## 下載
 
-請從 [GitHub Releases](https://github.com/LiuTouo/ClipFlow/releases/latest) 下載最新版：
+請從 [GitHub Releases](https://github.com/LiuTouo/Mnemark/releases/latest) 下載最新版：
 
 | 版本 | 適合情境 | 更新方式 | 資料位置 |
 | --- | --- | --- | --- |
-| NSIS 安裝版（`*-setup.exe`） | 需要一般安裝流程 | 啟用自動更新後，在背景下載並安裝經簽章的更新 | `%APPDATA%\ClipFlow` |
+| NSIS 安裝版（`*-setup.exe`） | 需要一般安裝流程 | 啟用自動更新後，在背景下載並安裝經簽章的更新 | `%APPDATA%\Mnemark` |
 | 可攜版（`*-portable.exe`） | 需要獨立執行檔 | 從「關於」視窗檢查並下載經簽章的新執行檔，再由使用者手動取代執行中的版本 | 執行檔旁 |
 
 可攜版不需要安裝，也不使用登錄檔 `Run` 機碼。選用的開機自啟功能會在 `shell:startup` 建立捷徑。
@@ -51,12 +53,12 @@ Windows 11 與多數已更新的 Windows 10 已包含 WebView2。精簡版或 LT
 ## 快速開始
 
 1. 下載並執行任一版本。
-2. ClipFlow 啟動後常駐系統匣，不會開啟主視窗。
+2. Mnemark 啟動後常駐系統匣，不會開啟主視窗。
 3. 照常複製文字、圖片或檔案。
 4. 按 `Ctrl+Shift+V` 開啟剪貼簿歷史。
 5. 選取 Clip，將其貼回原本使用的應用程式。
 
-全域快捷鍵可在設定中變更。如果選定的快捷鍵已被其他應用程式占用，ClipFlow 會開啟設定並要求改用其他組合。
+全域快捷鍵可在設定中變更。如果選定的快捷鍵已被其他應用程式占用，Mnemark 會開啟設定並要求改用其他組合。
 
 ## 使用方式
 
@@ -77,16 +79,16 @@ Windows 11 與多數已更新的 Windows 10 已包含 WebView2。精簡版或 LT
 
 ## 資料與隱私
 
-- 剪貼簿歷史預設只保留於記憶體，ClipFlow 結束後即消失。
-- 啟用持久化後，歷史會寫入 `clipflow.db`；停用時會刪除該資料庫。
-- 可攜版的設定與資料位於執行檔旁；安裝版使用 `%APPDATA%\ClipFlow`。
+- 剪貼簿歷史預設只保留於記憶體，Mnemark 結束後即消失。
+- 啟用持久化後，歷史會寫入 `mnemark.db`；停用時會刪除該資料庫。
+- 可攜版的設定與資料位於執行檔旁；安裝版使用 `%APPDATA%\Mnemark`。
 - 預設排除清單包含 `1Password.exe`、`Bitwarden.exe` 與 `KeePass.exe`。其中任一應用程式位於前景時所複製的內容會被捨棄。
 - 暫停監聽期間複製的內容會被捨棄，恢復監聽後不會補抓。
 - 文字與圖片歷史容量可調整。超過限制時，會優先移除最舊且未釘選的 Clip。
 
 ## 已知限制
 
-- 未提權的 ClipFlow 無法將模擬貼上輸入送至以系統管理員身分執行的應用程式，因為 Windows UIPI 會加以阻擋。選取內容仍會留在剪貼簿，可手動按 `Ctrl+V` 貼上。
+- 未提權的 Mnemark 無法將模擬貼上輸入送至以系統管理員身分執行的應用程式，因為 Windows UIPI 會加以阻擋。選取內容仍會留在剪貼簿，可手動按 `Ctrl+V` 貼上。
 - 應用程式排除功能依複製當下的前景程式判斷。若密碼管理程式本身不在前景，便無法辨識其自動填入內容。
 - 檔案歷史只保存路徑參照，不會複製檔案內容。如果來源檔案已移動或刪除，便無法貼成實際檔案。
 
@@ -95,13 +97,13 @@ Windows 11 與多數已更新的 Windows 10 已包含 WebView2。精簡版或 LT
 安裝 [Node.js](https://nodejs.org/)、[Rust](https://rustup.rs/) 與 Tauri 2 所需的 Windows 前置元件，然後執行：
 
 ```powershell
-git clone https://github.com/LiuTouo/ClipFlow.git
-cd ClipFlow
+git clone https://github.com/LiuTouo/Mnemark.git
+cd Mnemark
 npm ci
 npm run build:app
 ```
 
-正式版執行檔會產生於 `src-tauri/target/release/clipflow.exe`。正式建置請使用 `npm run build:app`，因為此指令會啟用 Tauri 必要的 `custom-protocol` feature。
+正式版執行檔會產生於 `src-tauri/target/release/mnemark.exe`。正式建置請使用 `npm run build:app`，因為此指令會啟用 Tauri 必要的 `custom-protocol` feature。
 
 若要以熱更新模式開發：
 
@@ -125,4 +127,4 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## 授權
 
-ClipFlow 採用 [GNU General Public License v3.0](LICENSE) 授權。
+Mnemark 採用 [GNU General Public License v3.0](LICENSE) 授權。

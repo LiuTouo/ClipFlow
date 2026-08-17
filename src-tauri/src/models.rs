@@ -104,7 +104,7 @@ impl Clip {
     }
 }
 
-/// User-configurable settings stored in clipflow.config.json
+/// User-configurable settings stored in mnemark.config.json
 /// Missing fields fall back to defaults so older config files keep working.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -206,7 +206,7 @@ fn load_from(path: &std::path::Path) -> AppConfig {
             Ok(cfg) => cfg,
             Err(e) => {
                 crate::log(&format!(
-                    "[ClipFlow] corrupt config; backing up and using defaults: {e}"
+                    "[Mnemark] corrupt config; backing up and using defaults: {e}"
                 ));
                 preserve_corrupt_config(path);
                 AppConfig::default()
@@ -236,38 +236,38 @@ fn save_to(path: &std::path::Path, config: &AppConfig) -> Result<(), String> {
     Ok(())
 }
 
-/// Move a corrupt config aside as `clipflow.config.json.bak` so it can be
+/// Move a corrupt config aside as `mnemark.config.json.bak` so it can be
 /// recovered rather than overwritten by the next save.
 fn preserve_corrupt_config(path: &std::path::Path) {
     let mut backup = path.as_os_str().to_owned();
     backup.push(".bak");
     let backup = std::path::PathBuf::from(backup);
     if let Err(e) = std::fs::rename(path, &backup) {
-        crate::log(&format!("[ClipFlow] failed to back up corrupt config: {e}"));
+        crate::log(&format!("[Mnemark] failed to back up corrupt config: {e}"));
     }
 }
 
 /// Where config and data files live. Portable builds keep everything next
 /// to the exe; installed builds can't (the install dir may be Program
-/// Files, which is not user-writable) so they use %APPDATA%\ClipFlow.
+/// Files, which is not user-writable) so they use %APPDATA%\Mnemark.
 pub fn data_dir() -> std::path::PathBuf {
     if crate::update::is_installed_build() {
         let dir = std::env::var_os("APPDATA")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("ClipFlow");
+            .join("Mnemark");
         let _ = std::fs::create_dir_all(&dir);
         return dir;
     }
     std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("ClipFlow.exe"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("mnemark.exe"))
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf()
 }
 
 fn config_path() -> std::path::PathBuf {
-    data_dir().join("clipflow.config.json")
+    data_dir().join("mnemark.config.json")
 }
 
 #[cfg(test)]
@@ -418,7 +418,7 @@ mod atomic_config_tests {
     use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("clipflow-{name}-{}.json", std::process::id()))
+        std::env::temp_dir().join(format!("mnemark-{name}-{}.json", std::process::id()))
     }
 
     fn cleanup(path: &PathBuf) {

@@ -1,17 +1,19 @@
-# ClipFlow
+# Mnemark
 
 **[English](README.md) | [繁體中文](README.zh-TW.md)**
 
 <p align="center">
-  <img src="clipflow_icon.svg" alt="ClipFlow" width="128" />
+  <img src="mnemark_icon.svg" alt="Mnemark" width="128" />
 </p>
 
 <p align="center">
-  <strong>A lightweight clipboard history tool for Windows.</strong><br />
-  <sub>Fast access to text, images, and copied files without interrupting your workflow.</sub>
+  <strong>Find anything you've copied.</strong><br />
+  <sub>Pronounced /ˈniː.mɑːrk/ — “NEE-mark”. The name joins <em>mneme</em> (memory) and <em>mark</em>.</sub>
 </p>
 
-ClipFlow is a Windows 10/11 clipboard manager built with Tauri 2. Press a global shortcut to open a compact floating panel, search recent clips, and paste one back into the app you were using.
+Everything you copy leaves a mark — Mnemark keeps those marks searchable, so you can always find your way back to something you've copied before.
+
+Mnemark is a Windows 10/11 clipboard manager built with Tauri 2. Press a global shortcut to open a compact floating panel, search recent clips, and paste one back into the app you were using.
 
 It is available as an NSIS installer with background updates or as a portable executable with no installation or registry writes.
 
@@ -39,11 +41,11 @@ WebView2 is included with Windows 11 and most current Windows 10 installations. 
 
 ## Download
 
-Download the latest version from [GitHub Releases](https://github.com/LiuTouo/ClipFlow/releases/latest):
+Download the latest version from [GitHub Releases](https://github.com/LiuTouo/Mnemark/releases/latest):
 
 | Edition | Choose this if | Updates | Data location |
 | --- | --- | --- | --- |
-| NSIS installer (`*-setup.exe`) | You want a conventional installation | Downloads and installs signed updates in the background when automatic updates are enabled | `%APPDATA%\ClipFlow` |
+| NSIS installer (`*-setup.exe`) | You want a conventional installation | Downloads and installs signed updates in the background when automatic updates are enabled | `%APPDATA%\Mnemark` |
 | Portable (`*-portable.exe`) | You want a standalone executable | Checks and downloads a signed replacement from the About window; you replace the running executable manually | Next to the executable |
 
 The portable edition does not require installation and does not use a registry `Run` entry. Optional startup uses a shortcut in `shell:startup`.
@@ -51,12 +53,12 @@ The portable edition does not require installation and does not use a registry `
 ## Quick start
 
 1. Download and run either edition.
-2. ClipFlow starts in the system tray without opening a main window.
+2. Mnemark starts in the system tray without opening a main window.
 3. Copy text, an image, or files as usual.
 4. Press `Ctrl+Shift+V` to open clipboard history.
 5. Select a clip to paste it into the application you were using.
 
-The global shortcut can be changed in Settings. If another application already owns the selected shortcut, ClipFlow opens Settings and asks you to choose a different combination.
+The global shortcut can be changed in Settings. If another application already owns the selected shortcut, Mnemark opens Settings and asks you to choose a different combination.
 
 ## Usage
 
@@ -77,16 +79,16 @@ For file entries, the default behavior writes an actual Windows file-drop clipbo
 
 ## Data and privacy
 
-- Clipboard history is kept in memory by default and is lost when ClipFlow exits.
-- Enabling persistence writes history to `clipflow.db`. Disabling it deletes that database.
-- Portable configuration and data are stored next to the executable; installed builds use `%APPDATA%\ClipFlow`.
+- Clipboard history is kept in memory by default and is lost when Mnemark exits.
+- Enabling persistence writes history to `mnemark.db`. Disabling it deletes that database.
+- Portable configuration and data are stored next to the executable; installed builds use `%APPDATA%\Mnemark`.
 - The default exclusion list contains `1Password.exe`, `Bitwarden.exe`, and `KeePass.exe`. Clips copied while one of these applications is in the foreground are discarded.
 - Copies made while monitoring is paused are discarded and are not captured after monitoring resumes.
 - Text and image history limits are configurable. When a limit is exceeded, the oldest unpinned clips are removed first.
 
 ## Known limitations
 
-- A non-elevated ClipFlow process cannot inject paste input into an application running as administrator because Windows UIPI blocks it. The selected content remains on the clipboard, so you can paste it manually with `Ctrl+V`.
+- A non-elevated Mnemark process cannot inject paste input into an application running as administrator because Windows UIPI blocks it. The selected content remains on the clipboard, so you can paste it manually with `Ctrl+V`.
 - Application exclusion is based on the foreground application at copy time. Password-manager autofill cannot be identified when the password manager itself is not the foreground application.
 - File history stores references to paths, not copies of file contents. Pasting files as files fails if the source files were moved or deleted.
 
@@ -95,13 +97,13 @@ For file entries, the default behavior writes an actual Windows file-drop clipbo
 Install [Node.js](https://nodejs.org/), [Rust](https://rustup.rs/), and the Windows prerequisites required by Tauri 2, then run:
 
 ```powershell
-git clone https://github.com/LiuTouo/ClipFlow.git
-cd ClipFlow
+git clone https://github.com/LiuTouo/Mnemark.git
+cd Mnemark
 npm ci
 npm run build:app
 ```
 
-The release executable is written to `src-tauri/target/release/clipflow.exe`. Use `npm run build:app` for production builds because it enables Tauri's required `custom-protocol` feature.
+The release executable is written to `src-tauri/target/release/mnemark.exe`. Use `npm run build:app` for production builds because it enables Tauri's required `custom-protocol` feature.
 
 For development with hot reload:
 
@@ -125,4 +127,4 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## License
 
-ClipFlow is distributed under the [GNU General Public License v3.0](LICENSE).
+Mnemark is distributed under the [GNU General Public License v3.0](LICENSE).

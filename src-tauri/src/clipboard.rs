@@ -935,7 +935,7 @@ pub fn write_files_to_clipboard_from_text(text: &str) -> Result<String, String> 
 /// stroke as Ctrl+Shift+V — "paste special" in Office, ignored elsewhere —
 /// which looks exactly like "paste doesn't work".
 /// Returns Err when the keystroke could not be injected at all (UIPI blocks
-/// input into elevated target apps from a non-elevated ClipFlow) so the
+/// input into elevated target apps from a non-elevated Mnemark) so the
 /// caller can at least log it — the content stays on the clipboard either
 /// way, for a manual Ctrl+V.
 pub fn simulate_ctrl_v() -> Result<(), String> {

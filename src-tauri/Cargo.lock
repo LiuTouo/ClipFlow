@@ -349,29 +349,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clipflow"
-version = "0.5.7"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "image",
- "minisign-verify",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-shell",
- "tauri-plugin-updater",
- "tokio",
- "ureq",
- "windows 0.58.0",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2022,6 +1999,29 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mnemark"
+version = "0.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "image",
+ "minisign-verify",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-shell",
+ "tauri-plugin-updater",
+ "tokio",
+ "ureq",
+ "windows 0.58.0",
 ]
 
 [[package]]

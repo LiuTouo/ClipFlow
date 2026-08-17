@@ -1,5 +1,6 @@
 mod clipboard;
 mod history;
+mod migration;
 mod models;
 mod persistence;
 mod startup;
@@ -354,13 +355,13 @@ async fn hide_and_paste(app: &tauri::AppHandle) {
     // desktop copies the referenced files there. The content stays on the
     // clipboard for a manual paste instead (per the Paste spec).
     if clipboard::foreground_is_desktop() {
-        log("[ClipFlow] paste suppressed: foreground is the desktop shell");
+        log("[Mnemark] paste suppressed: foreground is the desktop shell");
         return;
     }
     if let Err(e) = clipboard::simulate_ctrl_v() {
         // Phase-2 failure path per the Paste spec: the content is already
         // on the clipboard, so the user can still Ctrl+V manually.
-        log(&format!("[ClipFlow] paste simulation failed: {}", e));
+        log(&format!("[Mnemark] paste simulation failed: {}", e));
     }
 }
 
@@ -601,7 +602,7 @@ struct Monitor {
     config: Arc<Mutex<AppConfig>>,
     running: Arc<Mutex<bool>>,
     persistence: Arc<Mutex<Option<Persistence>>>,
-    /// Own exe name, so content ClipFlow itself wrote (paste / copy-only
+    /// Own exe name, so content Mnemark itself wrote (paste / copy-only
     /// while the Panel had focus) keeps its original source attribution.
     self_exe: String,
     last_seq: u32,
@@ -702,7 +703,7 @@ impl Monitor {
             }
             Err(clipboard::CaptureError::Locked) => {}
             Err(clipboard::CaptureError::Skip(reason)) => {
-                log(&format!("[ClipFlow] capture skipped: {}", reason));
+                log(&format!("[Mnemark] capture skipped: {}", reason));
                 self.last_seq = current_seq;
                 self.pending_since = None;
                 self.pending_seq = None;
@@ -742,7 +743,7 @@ fn start_monitor(
             // monitor thread fails silently — the user never notices history
             // has stopped. Log and keep polling.
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| monitor.tick())).is_err() {
-                log("[ClipFlow] monitor iteration panicked; clipboard watching continues");
+                log("[Mnemark] monitor iteration panicked; clipboard watching continues");
             }
         }
     });
@@ -865,7 +866,7 @@ fn center_on_cursor_monitor(app: &tauri::AppHandle, window: &tauri::WebviewWindo
     let cursor = match app.cursor_position() {
         Ok(p) => p,
         Err(e) => {
-            log(&format!("[ClipFlow] cursor_position failed: {:?}", e));
+            log(&format!("[Mnemark] cursor_position failed: {:?}", e));
             return;
         }
     };
@@ -873,11 +874,11 @@ fn center_on_cursor_monitor(app: &tauri::AppHandle, window: &tauri::WebviewWindo
     let monitor = match app.monitor_from_point(cursor.x, cursor.y) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            log("[ClipFlow] monitor_from_point returned None");
+            log("[Mnemark] monitor_from_point returned None");
             return;
         }
         Err(e) => {
-            log(&format!("[ClipFlow] monitor_from_point failed: {:?}", e));
+            log(&format!("[Mnemark] monitor_from_point failed: {:?}", e));
             return;
         }
     };
@@ -897,7 +898,7 @@ fn center_on_cursor_monitor(app: &tauri::AppHandle, window: &tauri::WebviewWindo
     );
 
     if let Err(e) = window.set_position(tauri::PhysicalPosition::new(x, y)) {
-        log(&format!("[ClipFlow] set_position failed: {:?}", e));
+        log(&format!("[Mnemark] set_position failed: {:?}", e));
     }
 }
 
@@ -905,17 +906,17 @@ fn show_panel(app: &tauri::AppHandle) {
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
 
-    log("[ClipFlow] show_panel() called");
+    log("[Mnemark] show_panel() called");
     if let Some(window) = app.get_webview_window("main") {
-        log("[ClipFlow] panel exists, showing");
+        log("[Mnemark] panel exists, showing");
         center_on_cursor_monitor(app, &window);
         let _ = window.show();
         let _ = window.set_focus();
         restore_preview_if_saved(app);
     } else {
-        log("[ClipFlow] creating new panel window");
+        log("[Mnemark] creating new panel window");
         match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-            .title("ClipFlow")
+            .title("Mnemark")
             // Window is larger than the panel (420x540) so the rounded
             // corners and CSS drop shadow have room inside a transparent frame.
             .inner_size(480.0, 620.0)
@@ -934,7 +935,7 @@ fn show_panel(app: &tauri::AppHandle) {
             .build()
         {
             Ok(w) => {
-                log(&format!("[ClipFlow] panel created: {:?}", w.label()));
+                log(&format!("[Mnemark] panel created: {:?}", w.label()));
                 center_on_cursor_monitor(app, &w);
                 // Click outside (focus loss) dismisses the Panel. The handler
                 // is armed only after the window has gained focus once (with a
@@ -975,7 +976,7 @@ fn show_panel(app: &tauri::AppHandle) {
                 restore_preview_if_saved(app);
             }
             Err(e) => {
-                log(&format!("[ClipFlow] panel creation failed: {:?}", e));
+                log(&format!("[Mnemark] panel creation failed: {:?}", e));
             }
         }
     }
@@ -1048,7 +1049,7 @@ fn schedule_focus_group_check(app: &tauri::AppHandle) {
                 hide_panel(&handle);
             }
         }) {
-            log(&format!("[ClipFlow] run_on_main_thread failed: {:?}", e));
+            log(&format!("[Mnemark] run_on_main_thread failed: {:?}", e));
         }
     });
 }
@@ -1064,7 +1065,7 @@ fn get_or_create_preview_window(app: &tauri::AppHandle) -> Result<tauri::Webview
     }
 
     let w = WebviewWindowBuilder::new(app, "clip-preview", WebviewUrl::App("preview.html".into()))
-        .title("ClipFlow Preview")
+        .title("Mnemark Preview")
         .decorations(false)
         .transparent(true)
         .shadow(false)
@@ -1154,6 +1155,11 @@ fn register_panel_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> Result<(),
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(_hidden: bool) {
     update::cleanup_stale_portable_update();
+    // One-time migration of legacy ClipFlow data (config/db/shortcut) into the
+    // Mnemark identity. Runs before config load / persistence open so the first
+    // launch reads the migrated files. Errors preserve the legacy data and are
+    // surfaced through the existing startup-error UI, never silently dropped.
+    let migration_error = migration::migrate_legacy_data().err();
     let config = AppConfig::load();
     let mut history_store = HistoryStore::new();
 
@@ -1171,7 +1177,7 @@ pub fn run(_hidden: bool) {
                         }
                     }
                     Err(e) => log(&format!(
-                        "[ClipFlow] failed to load persisted history: {}",
+                        "[Mnemark] failed to load persisted history: {}",
                         e
                     )),
                 }
@@ -1180,7 +1186,7 @@ pub fn run(_hidden: bool) {
                 let active: Vec<&str> = history_store.clips.iter().map(|c| c.id.as_str()).collect();
                 if let Err(e) = p.reconcile_if_due(&active, now_ms()) {
                     log(&format!(
-                        "[ClipFlow] persistence reconciliation failed: {}",
+                        "[Mnemark] persistence reconciliation failed: {}",
                         e
                     ));
                 }
@@ -1188,7 +1194,7 @@ pub fn run(_hidden: bool) {
             }
             Err(e) => {
                 log(&format!(
-                    "[ClipFlow] failed to open persistence database: {}",
+                    "[Mnemark] failed to open persistence database: {}",
                     e
                 ));
                 None
@@ -1201,13 +1207,13 @@ pub fn run(_hidden: bool) {
                 // every leftover row is stale and is purged once due.
                 if let Err(e) = p.reconcile_if_due(&[], now_ms()) {
                     log(&format!(
-                        "[ClipFlow] disabled-persistence cleanup failed: {}",
+                        "[Mnemark] disabled-persistence cleanup failed: {}",
                         e
                     ));
                 }
             }
             Err(e) => log(&format!(
-                "[ClipFlow] failed to open persistence database: {}",
+                "[Mnemark] failed to open persistence database: {}",
                 e
             )),
         }
@@ -1222,9 +1228,9 @@ pub fn run(_hidden: bool) {
     let last_deleted = Arc::new(Mutex::new(None));
     let persistence = Arc::new(Mutex::new(persistence));
     let tray_items = Arc::new(Mutex::new(None));
-    let startup_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let startup_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(migration_error));
 
-    log("[ClipFlow] run() called");
+    log("[Mnemark] run() called");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1243,11 +1249,11 @@ pub fn run(_hidden: bool) {
         })
         .setup(move |app| {
             let resource_dir = app.path().resource_dir().unwrap_or_default();
-            log(&format!("[ClipFlow] resource_dir: {:?}", resource_dir));
-            log("[ClipFlow] setup closure entered");
+            log(&format!("[Mnemark] resource_dir: {:?}", resource_dir));
+            log("[Mnemark] setup closure entered");
             let handle = app.handle().clone();
 
-            log("[ClipFlow] registering hotkey");
+            log("[Mnemark] registering hotkey");
             // Register global hotkey
             let hotkey_str = {
                 let config = lock(&config_store);
@@ -1255,10 +1261,15 @@ pub fn run(_hidden: bool) {
             };
 
             if let Err(e) = register_panel_hotkey(&handle, &hotkey_str) {
-                log(&format!("[ClipFlow] hotkey registration failed: {}", e));
+                log(&format!("[Mnemark] hotkey registration failed: {}", e));
                 // Per spec: on conflict, open Settings so the user picks
                 // another combination — with the reason shown inline.
                 *lock(&startup_error) = Some(e);
+            }
+
+            // Surface any startup error — a failed legacy migration or a hotkey
+            // conflict — inline in Settings (see take_startup_error).
+            if lock(&startup_error).is_some() {
                 let _ = open_settings_window(&handle);
             }
 
@@ -1282,7 +1293,7 @@ pub fn run(_hidden: bool) {
                 }
             }
 
-            log("[ClipFlow] hotkey registered, starting tray setup");
+            log("[Mnemark] hotkey registered, starting tray setup");
             // Start clipboard monitor
             start_monitor(
                 handle.clone(),
@@ -1321,7 +1332,7 @@ pub fn run(_hidden: bool) {
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
-                .tooltip(format!("ClipFlow v{}", env!("CARGO_PKG_VERSION")))
+                .tooltip(format!("Mnemark v{}", env!("CARGO_PKG_VERSION")))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
@@ -1349,7 +1360,7 @@ pub fn run(_hidden: bool) {
                     _ => {}
                 })
                 .build(app)?;
-            log("[ClipFlow] tray built successfully");
+            log("[Mnemark] tray built successfully");
 
             // Keep item handles so labels can be re-localized on language change.
             *lock(&tray_items) = Some(TrayMenuItems {
@@ -1403,23 +1414,23 @@ fn open_settings_window(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
 
-    log("[ClipFlow] open_settings_window() called");
+    log("[Mnemark] open_settings_window() called");
     if let Some(window) = app.get_webview_window("settings") {
-        log("[ClipFlow] settings exists, focusing");
+        log("[Mnemark] settings exists, focusing");
         window.set_focus()?;
         return Ok(());
     }
 
-    log("[ClipFlow] creating settings window");
+    log("[Mnemark] creating settings window");
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("ClipFlow Settings")
+        .title("Mnemark Settings")
         .inner_size(500.0, 700.0)
         .resizable(false)
         .visible(true)
         .center()
         .build()?;
 
-    log("[ClipFlow] settings window created");
+    log("[Mnemark] settings window created");
     Ok(())
 }
 
@@ -1433,7 +1444,7 @@ fn open_about_dialog(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
     }
 
     let _ = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("about.html".into()))
-        .title("About ClipFlow")
+        .title("About Mnemark")
         .inner_size(360.0, 420.0)
         .resizable(false)
         .center()
@@ -1456,9 +1467,9 @@ mod shell_open_scope_tests {
         let re = regex::Regex::new(&format!("^{pattern}$")).unwrap();
 
         // About-page links and the open-folder button must keep working.
-        assert!(re.is_match("https://github.com/LiuTouo/ClipFlow"));
-        assert!(re.is_match("C:\\Users\\me\\AppData\\Local\\ClipFlow"));
-        assert!(re.is_match("D:/portable/ClipFlow"));
+        assert!(re.is_match("https://github.com/LiuTouo/Mnemark"));
+        assert!(re.is_match("C:\\Users\\me\\AppData\\Local\\Mnemark"));
+        assert!(re.is_match("D:/portable/Mnemark"));
 
         // Everything else must be rejected by the webview surface.
         for bad in [

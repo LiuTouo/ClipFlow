@@ -1,12 +1,12 @@
 [package]
-name = "clipflow"
-version = "0.5.7"
+name = "mnemark"
+version = "0.6.0"
 description = "Modern lightweight clipboard history tool"
 authors = ["LiuT"]
 edition = "2021"
 
 [lib]
-name = "clipflow_lib"
+name = "mnemark_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]

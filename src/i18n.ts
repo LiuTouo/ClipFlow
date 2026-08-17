@@ -1,14 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
- * Shared UI strings for all ClipFlow pages (panel, settings, about).
+ * Shared UI strings for all Mnemark pages (panel, settings, about).
  * Language comes from AppConfig.language: "zh-TW" (default) or "en".
  */
 const I18N: Record<string, Record<string, string>> = {
   "zh-TW": {
     // Settings page
     settings: "設定",
-    settingsSubtitle: "調整 ClipFlow 的行為與外觀。",
+    settingsSubtitle: "調整 Mnemark 的行為與外觀。",
     hotkey: "快捷鍵",
     hotkeyLabel: "快捷鍵組合",
     hotkeyHint: "點擊以變更，按 Esc 取消",
@@ -47,7 +47,7 @@ const I18N: Record<string, Record<string, string>> = {
     autoUpdate: "自動檢查更新",
     autoUpdateHint: "安裝版會在背景自動下載並安裝更新；免安裝版請到「關於」頁手動檢查。",
     rememberHistoryFilter: "記住歷史記錄過濾器",
-    rememberHistoryFilterHint: "關閉時每次開啟面板皆回到「全部」；開啟時在 ClipFlow 結束前會記住上次選擇的過濾器。",
+    rememberHistoryFilterHint: "關閉時每次開啟面板皆回到「全部」；開啟時在 Mnemark 結束前會記住上次選擇的過濾器。",
     // Panel
     searchPlaceholder: "搜尋剪貼簿歷史…",
     searchShortcutHint: "按 / 聚焦搜尋",
@@ -96,8 +96,10 @@ const I18N: Record<string, Record<string, string>> = {
     previewHintAfter: "開啟預覽，再按一次關閉",
     pressToPreview: "按下預覽",
     // About
-    aboutTitle: "關於 ClipFlow",
-    tagline: "現代、輕量的 Windows 剪貼簿歷史工具。",
+    aboutTitle: "關於 Mnemark",
+    tagline: "Find anything you've copied.（找到任何你複製過的內容。）",
+    nameMeaning: "mneme（記憶）+ mark（標記）",
+    brandMeaning: "你複製的每一件事都會留下痕跡——Mnemark 讓這些痕跡可被搜尋，讓你能隨時找回曾複製過的內容。",
     changelog: "更新日誌",
     checkUpdate: "檢查更新",
     checkingUpdate: "正在檢查更新…",
@@ -111,13 +113,13 @@ const I18N: Record<string, Record<string, string>> = {
     downloadingUpdate: "正在下載更新…",
     portableAssetMissing: "此版本未提供免安裝檔案",
     portableSigMissing: "此版本未提供簽章檔，無法驗證更新",
-    portableUpdateReady: "已下載至 {path}。請結束 ClipFlow，再用新檔案取代舊的執行檔。",
+    portableUpdateReady: "已下載至 {path}。請結束 Mnemark，再用新檔案取代舊的執行檔。",
     openFolder: "開啟資料夾",
   },
   en: {
     // Settings page
     settings: "Settings",
-    settingsSubtitle: "Tune ClipFlow's behavior and appearance.",
+    settingsSubtitle: "Tune Mnemark's behavior and appearance.",
     hotkey: "Hotkey",
     hotkeyLabel: "Hotkey combination",
     hotkeyHint: "Click to change, press Esc to cancel",
@@ -156,7 +158,7 @@ const I18N: Record<string, Record<string, string>> = {
     autoUpdate: "Automatically check for updates",
     autoUpdateHint: "Installed builds download and install updates in the background. Portable builds: check manually from the About page.",
     rememberHistoryFilter: "Remember history filter",
-    rememberHistoryFilterHint: "When off, the panel resets to \"All\" each time it opens. When on, the last filter is remembered until ClipFlow exits.",
+    rememberHistoryFilterHint: "When off, the panel resets to \"All\" each time it opens. When on, the last filter is remembered until Mnemark exits.",
     // Panel
     searchPlaceholder: "Search clipboard history...",
     searchShortcutHint: "Press / to focus search",
@@ -205,12 +207,14 @@ const I18N: Record<string, Record<string, string>> = {
     previewHintAfter: "to open the preview, press again to close",
     pressToPreview: "Press to preview",
     // About
-    aboutTitle: "About ClipFlow",
-    tagline: "A modern, lightweight clipboard history tool for Windows.",
+    aboutTitle: "About Mnemark",
+    tagline: "Find anything you've copied.",
+    nameMeaning: "mneme (memory) + mark",
+    brandMeaning: "Everything you copy leaves a mark — Mnemark keeps those marks searchable, so you can always find your way back to something you've copied before.",
     changelog: "Changelog",
     checkUpdate: "Check for updates",
     checkingUpdate: "Checking for updates…",
-    updateUpToDate: "ClipFlow is up to date",
+    updateUpToDate: "Mnemark is up to date",
     updateAvailable: "Version v{v} is available",
     updateError: "Update check failed — please try again later",
     noReleaseYet: "No release published yet",
@@ -220,7 +224,7 @@ const I18N: Record<string, Record<string, string>> = {
     downloadingUpdate: "Downloading update…",
     portableAssetMissing: "No portable build in this release",
     portableSigMissing: "This release has no signature file — cannot verify the update",
-    portableUpdateReady: "Downloaded to {path}. Quit ClipFlow, then replace the old exe with the new file.",
+    portableUpdateReady: "Downloaded to {path}. Quit Mnemark, then replace the old exe with the new file.",
     openFolder: "Open folder",
   },
 };

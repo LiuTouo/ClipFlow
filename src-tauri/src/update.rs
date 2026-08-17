@@ -46,7 +46,7 @@ fn parse_reg_sz(buf: &[u16], len_bytes: usize) -> Option<String> {
 }
 
 /// InstallLocation from the NSIS uninstall key, if this machine has one.
-/// The value is written quoted ("C:\...\ClipFlow") — quotes are trimmed.
+/// The value is written quoted ("C:\...\Mnemark") — quotes are trimmed.
 fn install_location_from_registry() -> Option<PathBuf> {
     use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
@@ -54,7 +54,7 @@ fn install_location_from_registry() -> Option<PathBuf> {
         KEY_READ, REG_EXPAND_SZ, REG_SZ,
     };
 
-    let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ClipFlow");
+    let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Mnemark");
     let value = to_wide("InstallLocation");
 
     for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
@@ -221,12 +221,12 @@ fn portable_update_dest() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()?
         .parent()
-        .map(|dir| dir.join("clipflow-update.exe"))
+        .map(|dir| dir.join("mnemark-update.exe"))
 }
 
 /// Delete a leftover portable-update exe next to the current one. Runs at
-/// startup: clipflow-update.exe only ever holds a downloaded update pending
-/// manual overwrite, so once ClipFlow is running again the file is either
+/// startup: mnemark-update.exe only ever holds a downloaded update pending
+/// manual overwrite, so once Mnemark is running again the file is either
 /// already applied (a stale duplicate) or abandoned. Trade-off accepted per
 /// release flow: a downloaded-but-not-yet-applied update must be fetched
 /// again (~15 MB).
@@ -241,7 +241,7 @@ pub fn cleanup_stale_portable_update() {
 /// Download the newer portable exe next to the running one. Rust-side
 /// because GitHub's asset CDN omits CORS headers, so webview fetch fails.
 /// The exe is written ONLY after its minisign signature verifies — an
-/// unverified byte never becomes clipflow-update.exe. Returns the dest path.
+/// unverified byte never becomes mnemark-update.exe. Returns the dest path.
 #[tauri::command]
 pub async fn download_portable_update(url: String, sig_url: String) -> Result<String, String> {
     if is_installed_build() {
@@ -332,13 +332,13 @@ struct UpdateLabels {
 fn update_labels(lang: &str) -> UpdateLabels {
     if lang == "en" {
         UpdateLabels {
-            title: "ClipFlow Update",
-            restart_body: "A new version has been installed. Restart ClipFlow now?",
+            title: "Mnemark Update",
+            restart_body: "A new version has been installed. Restart Mnemark now?",
         }
     } else {
         UpdateLabels {
-            title: "ClipFlow 更新",
-            restart_body: "已安裝新版本。現在重新啟動 ClipFlow 嗎？",
+            title: "Mnemark 更新",
+            restart_body: "已安裝新版本。現在重新啟動 Mnemark 嗎？",
         }
     }
 }
@@ -387,25 +387,25 @@ pub fn spawn_auto_update_check(app: tauri::AppHandle, config: Arc<Mutex<AppConfi
                 Ok(Some(update)) => update,
                 Ok(None) => return, // up to date
                 Err(e) => {
-                    crate::log(&format!("[ClipFlow] auto-update check failed: {e}"));
+                    crate::log(&format!("[Mnemark] auto-update check failed: {e}"));
                     return;
                 }
             },
             Err(e) => {
-                crate::log(&format!("[ClipFlow] auto-update unavailable: {e}"));
+                crate::log(&format!("[Mnemark] auto-update unavailable: {e}"));
                 return;
             }
         };
 
         crate::log(&format!(
-            "[ClipFlow] auto-update: installing v{}",
+            "[Mnemark] auto-update: installing v{}",
             update.version
         ));
         if let Err(e) = update
             .download_and_install(|_chunk, _total| {}, || {})
             .await
         {
-            crate::log(&format!("[ClipFlow] auto-update install failed: {e}"));
+            crate::log(&format!("[Mnemark] auto-update install failed: {e}"));
             return;
         }
 
@@ -455,23 +455,23 @@ mod tests {
 
     #[test]
     fn reg_sz_with_terminator_is_decoded() {
-        let mut buf = wide("C:\\Apps\\ClipFlow");
+        let mut buf = wide("C:\\Apps\\Mnemark");
         buf.push(0);
         let len_bytes = buf.len() * 2;
         assert_eq!(
             parse_reg_sz(&buf, len_bytes).as_deref(),
-            Some("C:\\Apps\\ClipFlow")
+            Some("C:\\Apps\\Mnemark")
         );
     }
 
     #[test]
     fn reg_sz_without_terminator_is_decoded_whole() {
         // The API does not guarantee a terminating null for every type.
-        let buf = wide("C:\\Apps\\ClipFlow");
+        let buf = wide("C:\\Apps\\Mnemark");
         let len_bytes = buf.len() * 2;
         assert_eq!(
             parse_reg_sz(&buf, len_bytes).as_deref(),
-            Some("C:\\Apps\\ClipFlow")
+            Some("C:\\Apps\\Mnemark")
         );
     }
 
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn url_validation_accepts_only_https_github_hosts() {
         for good in [
-            "https://github.com/LiuTouo/ClipFlow/releases/download/v1.0.0/ClipFlow_v1.0.0_x64-portable.exe",
+            "https://github.com/LiuTouo/Mnemark/releases/download/v1.0.0/Mnemark_v1.0.0_x64-portable.exe",
             "https://objects.githubusercontent.com/github-production-release-asset/abc",
             "https://release-assets.githubusercontent.com/github-production/abc",
             "https://github.com:443/x",

@@ -1,4 +1,4 @@
-# Bump ClipFlow version everywhere. Cargo.toml stays the single source of
+# Bump Mnemark version everywhere. Cargo.toml stays the single source of
 # truth; this script propagates it and inserts a CHANGELOG skeleton.
 # Idempotent: re-running only fills in the parts that are missing.
 #
@@ -70,7 +70,7 @@ if ($changelog -match [regex]::Escape("## [$Version]")) {
 
     $linkMatch = [regex]::Match($changelog, '(?m)^\[\d+\.\d+\.\d+\]:')
     if ($linkMatch.Success) {
-        $changelog = $changelog.Insert($linkMatch.Index, "[$Version]: https://github.com/LiuTouo/ClipFlow/compare/v$prevReleased...v$Version`n")
+        $changelog = $changelog.Insert($linkMatch.Index, "[$Version]: https://github.com/LiuTouo/Mnemark/compare/v$prevReleased...v$Version`n")
     }
     [System.IO.File]::WriteAllText($changelogPath, $changelog, $utf8)
     Write-Host "CHANGELOG.md: skeleton for $Version inserted (compare base v$prevReleased)"

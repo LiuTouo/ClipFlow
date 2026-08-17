@@ -1,4 +1,4 @@
-# ClipFlow — CONTEXT
+# Mnemark — CONTEXT
 
 ## Glossary
 
@@ -52,7 +52,7 @@ The ordered, in-memory collection of all Clips. Managed by the Rust backend, exp
 
 **Capacity:** dual limit for images — count (`image_count_limit`, default 10) and memory (`image_memory_budget`, default 50 MB). Text: max 100 Clips (configurable). FilePaths Clips count toward text. Eviction is oldest-unpinned-first on whichever image limit is breached first.
 
-**Persistence:** in-memory by default. Optional SQLite write-through persistence via the `persist` config option (Settings checkbox). The database (`clipflow.db`) lives in the data dir — next to the exe for portable builds, `%APPDATA%\ClipFlow` for installed builds (see Portable). When enabled, every capture/delete/pin/eviction is mirrored to SQLite and the History is reloaded on startup. Disabling persistence deletes `clipflow.db`.
+**Persistence:** in-memory by default. Optional SQLite write-through persistence via the `persist` config option (Settings checkbox). The database (`mnemark.db`) lives in the data dir — next to the exe for portable builds, `%APPDATA%\Mnemark` for installed builds (see Portable). When enabled, every capture/delete/pin/eviction is mirrored to SQLite and the History is reloaded on startup. Disabling persistence deletes `mnemark.db`.
 
 ### Pin
 A marker on a Clip that keeps it at the top of the History, above a visual divider.
@@ -84,7 +84,7 @@ The floating WebView window that displays the History. Created on first invocati
 - Click a side action button (📌 Pin, 📋 Copy-only, ⋯ More) → perform that single action, leave the Panel open. These do not dismiss. The Delete action lives inside the More popover menu.
 - More menu opens near the row button, closes on outside click / Escape / delete action. Only one menu at a time; closing the panel or changing the clip list dismisses it.
 
-**Every open starts from the top:** the search box is cleared, the first Clip is selected, and the list is scrolled to `scrollTop: 0`. The previous session's scroll position, selection, and search query are discarded on close. The active type filter resets to "All" when `remember_history_filter` is off (default); when on, the in-memory filter survives hide/show but is never persisted to disk and resets when ClipFlow exits.
+**Every open starts from the top:** the search box is cleared, the first Clip is selected, and the list is scrolled to `scrollTop: 0`. The previous session's scroll position, selection, and search query are discarded on close. The active type filter resets to "All" when `remember_history_filter` is off (default); when on, the in-memory filter survives hide/show but is never persisted to disk and resets when Mnemark exits.
 
 While the Panel is open, new clipboard captures from the ClipboardMonitor still arrive in real time. The list updates without scrolling to the top, preserving the user's current scroll position. Delete, pin, and other in-session actions likewise preserve scroll position — only a close/reopen resets to the top.
 
@@ -119,7 +119,7 @@ If phase 2 fails (target window vanished, etc.), the content remains on the clip
 For FilePaths Clips, phase 1 depends on the `paste_files_as_files` setting (default on): on writes a real CF_HDROP plus a CF_UNICODETEXT companion (non-file targets still get path text); off writes the `;`-joined path text. See `docs/adr/0001-cfhdrop-file-paste.md`.
 
 ### Tray
-The system tray icon that indicates ClipFlow is running. Right-click opens a native context menu: Settings, About, Pause Monitoring, Quit.
+The system tray icon that indicates Mnemark is running. Right-click opens a native context menu: Settings, About, Pause Monitoring, Quit.
 
 ### Language
 All user-facing UI (Panel, Settings, About, tray menu) is localized via the `language` config option: `zh-TW` (Traditional Chinese, default) or `en`. Frontend pages share one dictionary (`src/i18n.ts`); the Panel re-applies the language whenever it regains focus, and the tray menu labels update immediately when the setting changes.
@@ -136,9 +136,9 @@ IBM Plex Sans TC, bundled locally under `src/assets/fonts/`. Three weights inclu
 **Provenance:** Official IBM Plex release `@ibm/plex-sans-tc@1.1.1` from https://github.com/IBM/plex. Licensed under SIL Open Font License 1.1 (see `src/assets/fonts/LICENSE.txt`). Covers Traditional Chinese + Latin character sets. No runtime network requests — all font data is embedded in the application bundle at build time. Font stack: `"IBM Plex Sans TC", "Segoe UI", system-ui, -apple-system, sans-serif`.
 
 ### Portable
-ClipFlow runs without installation or registry writes. Startup is achieved via a `.lnk` shortcut in `shell:startup` with `--hidden` flag — no registry Run key.
+Mnemark runs without installation or registry writes. Startup is achieved via a `.lnk` shortcut in `shell:startup` with `--hidden` flag — no registry Run key.
 
-One exe also ships inside the NSIS installer. Config and data live next to the exe for portable builds; installed builds use `%APPDATA%\ClipFlow` because the install dir (e.g. Program Files) is not user-writable. The channel is detected at runtime via the NSIS uninstall registry key; installed builds auto-update via tauri-plugin-updater, portable builds download the new exe from GitHub Releases for manual overwrite (minisign-verified against the embedded updater pubkey before anything is written to disk). See `docs/adr/0002-update-strategy.md`.
+One exe also ships inside the NSIS installer. Config and data live next to the exe for portable builds; installed builds use `%APPDATA%\Mnemark` because the install dir (e.g. Program Files) is not user-writable. The channel is detected at runtime via the NSIS uninstall registry key; installed builds auto-update via tauri-plugin-updater, portable builds download the new exe from GitHub Releases for manual overwrite (minisign-verified against the embedded updater pubkey before anything is written to disk). See `docs/adr/0002-update-strategy.md`.
 
 ---
 

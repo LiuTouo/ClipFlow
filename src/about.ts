@@ -5,7 +5,7 @@ import { resourceDir } from "@tauri-apps/api/path";
 import { initLanguage, applyI18n, t } from "./i18n";
 import { applyTheme } from "./theme";
 
-const REPO = "LiuTouo/ClipFlow";
+const REPO = "LiuTouo/Mnemark";
 
 interface UpdateCheck {
   status: string; // "up_to_date" | "available"
@@ -155,10 +155,10 @@ async function init() {
     }
   };
   document.getElementById("link-github")!.addEventListener("click", (e) =>
-    openLink(e, "https://github.com/LiuTouo/ClipFlow")
+    openLink(e, "https://github.com/LiuTouo/Mnemark")
   );
   document.getElementById("link-changelog")!.addEventListener("click", (e) =>
-    openLink(e, "https://github.com/LiuTouo/ClipFlow/blob/main/CHANGELOG.md")
+    openLink(e, "https://github.com/LiuTouo/Mnemark/blob/main/CHANGELOG.md")
   );
 
   // Update section: the backend reports which channel this binary serves.

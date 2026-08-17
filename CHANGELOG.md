@@ -4,6 +4,18 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.6.0] - 2026-08-17
+
+### Changed
+
+- 品牌更名為 Mnemark：應用程式、文件、更新與發行資產全面由 ClipFlow 改名為 Mnemark（`mnemark.exe`、`mnemark.config.json`、`mnemark.db`、`mnemark-update.exe`、`Mnemark.lnk`），GitHub 儲存庫移至 `LiuTouo/Mnemark`
+- 首次啟動時自動將舊版 ClipFlow 資料遷移至 Mnemark：設定檔、SQLite 資料庫與開機自啟捷徑以複製方式遷移，舊檔保留為可復原備份；NSIS 安裝程式會清理舊版 ClipFlow 安裝
+- 面板預覽提示的 localStorage 鍵由 `clipflow.previewHintSeen.v1` 遷移至 `mnemark.previewHintSeen.v1`
+
+### Added
+
+- ADR 0003：記錄 Mnemark 品牌識別、資料遷移、衝突規則、安裝程式清理與舊名稱保留清單
+
 ## [0.5.7] - 2026-08-17
 
 ### Changed
@@ -260,6 +272,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.6.0]: https://github.com/LiuTouo/Mnemark/compare/v0.5.7...v0.6.0
 [0.5.7]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.4...v0.5.5

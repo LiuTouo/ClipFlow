@@ -1,6 +1,6 @@
 //! Optional SQLite write-through persistence for the clipboard History.
 //! Enabled via the `persist` config option; the database lives next to the
-//! executable (`clipflow.db`) so portable installs stay self-contained.
+//! executable (`mnemark.db`) so portable installs stay self-contained.
 
 use std::collections::HashSet;
 
@@ -296,7 +296,7 @@ fn upsert_on(conn: &Connection, clip: &Clip) -> Result<(), String> {
 }
 
 fn db_path() -> std::path::PathBuf {
-    crate::models::data_dir().join("clipflow.db")
+    crate::models::data_dir().join("mnemark.db")
 }
 
 /// True when the database file exists on disk. Used to decide whether a

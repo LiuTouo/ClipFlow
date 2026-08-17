@@ -184,7 +184,7 @@ async function init() {
   applyTheme(config.theme || "system");
   populateForm();
   applyI18n();
-  document.title = `ClipFlow ${t("settings")}`;
+  document.title = `Mnemark ${t("settings")}`;
   bindFormEvents();
   setLoading(false);
   clearStatus();
@@ -341,7 +341,7 @@ function bindFormEvents() {
   selectInput("setting-language").addEventListener("change", (e) => {
     setLanguage((e.target as HTMLSelectElement).value);
     applyI18n();
-    document.title = `ClipFlow ${t("settings")}`;
+    document.title = `Mnemark ${t("settings")}`;
   });
 
   // Live theme preview

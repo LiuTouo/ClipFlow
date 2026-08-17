@@ -162,7 +162,7 @@ impl HistoryStore {
 
     /// (source_exe, source_title) of the Clip with this content hash — used
     /// to preserve the original source app when the monitor re-captures
-    /// content ClipFlow itself wrote. Returns only strings: cloning a whole
+    /// content Mnemark itself wrote. Returns only strings: cloning a whole
     /// Clip here would copy up to 10 MB of image bytes for two fields.
     pub fn source_by_hash(&self, content_hash: &str) -> Option<(String, String)> {
         self.clips
