@@ -4,6 +4,25 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.5.6] - 2026-08-17
+
+### Added
+
+- 前端測試執行器：新增 vitest 與 `npm test` 指令，並為預覽切換狀態機（PreviewController）加入單元測試
+- CI workflow（`.github/workflows/ci.yml`）：推送或 PR 即執行前端測試與建置、Rust 格式化／clippy／cargo check／測試
+
+### Changed
+
+- 預覽互動改為「按下 Space 切換」：滑鼠懸停項目後按一下 Space 開啟預覽、再按一下關閉（原為按住開啟、放開關閉）；新增 PreviewController 純狀態機處理按鍵連發、焦點往返與後端狀態同步，面板暫時隱藏時保留預覽內容、再次開啟時還原
+- 停用持久化時不再直接刪除資料庫：改為記錄上次清理時間並釋放連線，啟動時於超過 72 小時後交易式清理不在歷史中的殘留列
+- 設定檔改為原子寫入（先寫暫存檔再重新命名覆蓋），損毀的設定檔保留為 `.bak` 後回退預設值
+- Rust 程式碼統一 `cargo fmt` 格式
+
+### Fixed
+
+- 圖片記憶體預算設定（`image_memory_budget_mb`）過去未於淘汰時生效，僅以筆數上限淘汰；現一併強制執行記憶體預算
+- 停用持久化時清理門檻（cleanup gate）寫入失敗會丟棄連線、造成狀態遺失；改為保留狀態
+
 ## [0.5.5] - 2026-08-16
 
 ### Fixed
@@ -235,6 +254,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.5.6]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.2...v0.5.3
