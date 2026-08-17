@@ -4,10 +4,11 @@
 ; state by productName, so a stock Mnemark installer would not see the old
 ; ClipFlow install and would install side-by-side. These hooks migrate it:
 ;   PREINSTALL  — kill any running Mnemark/ClipFlow, detect the legacy
-;                 ClipFlow uninstall record (HKCU then HKLM), run its
-;                 uninstaller silently (preserving user data), and abort with
-;                 a manual-remediation message if removal fails or the old
-;                 identity survives.
+;                 ClipFlow uninstall record (HKCU then HKLM, reading
+;                 UninstallString and InstallLocation from the same key), run
+;                 its uninstaller passively (preserving user data), and abort
+;                 with a manual-remediation message if removal fails or the
+;                 old identity survives.
 ;   POSTINSTALL — recreate the Start Menu and Desktop shortcuts the legacy
 ;                 install had, as Mnemark equivalents (including /UPDATE mode,
 ;                 where the stock shortcut flow returns early).
@@ -36,17 +37,29 @@ Var MnemarkMigrateStartMenuShortcut
   Sleep 500
 
   ; Detect the legacy ClipFlow uninstall record: per-user first, then machine.
+  ; Read UninstallString AND InstallLocation from the SAME uninstall key and
+  ; hive, tracking which hive held the record. v0.5.7 Tauri writes
+  ; InstallLocation (quoted) on this key; reading it from a separate
+  ; manufacturer/product key returns empty and yields _?= (the v0.6.0 bug).
   StrCpy $MnemarkMigrateDesktopShortcut 0
   StrCpy $MnemarkMigrateStartMenuShortcut 0
   StrCpy $R0 ""
   StrCpy $R1 ""
+  StrCpy $R5 ""
   ReadRegStr $R0 HKCU "${LEGACY_UNINSTKEY}" "UninstallString"
-  ReadRegStr $R1 HKCU "Software\${MANUFACTURER}\${LEGACY_PRODUCTNAME}" ""
-  StrCmp $R0 "" 0 legacy_found
+  ReadRegStr $R1 HKCU "${LEGACY_UNINSTKEY}" "InstallLocation"
+  StrCmp $R0 "" 0 legacy_hkcu_found
   ReadRegStr $R0 HKLM "${LEGACY_UNINSTKEY}" "UninstallString"
-  ReadRegStr $R1 HKLM "Software\${MANUFACTURER}\${LEGACY_PRODUCTNAME}" ""
-  StrCmp $R0 "" 0 legacy_found
+  ReadRegStr $R1 HKLM "${LEGACY_UNINSTKEY}" "InstallLocation"
+  StrCmp $R0 "" 0 legacy_hklm_found
   Goto legacy_none
+
+  legacy_hkcu_found:
+    StrCpy $R5 "HKCU"
+    Goto legacy_found
+  legacy_hklm_found:
+    StrCpy $R5 "HKLM"
+    Goto legacy_found
 
   legacy_found:
     ; Record shortcut presence before the old uninstaller removes them.
@@ -57,21 +70,49 @@ Var MnemarkMigrateStartMenuShortcut
       StrCpy $MnemarkMigrateStartMenuShortcut 1
     ${EndIf}
 
-    ; Run the old uninstaller silently. The app-data delete checkbox defaults
-    ; to off and is only read after the confirm page, which silent mode skips,
-    ; so user data in %APPDATA% is preserved.
-    DetailPrint "Removing legacy ClipFlow installation..."
-    StrCpy $R0 "$R0 /S _?=$R1"
-    ExecWait '$R0' $R2
+    ; Normalize the two registry values: Tauri stores both quoted. The _?=
+    ; switch must be passed an unquoted directory, even when it contains spaces.
+    ${WordReplace} $R0 '"' '' '+' $R0
+    ${WordReplace} $R1 '"' '' '+' $R1
+    ; If InstallLocation is missing, derive the directory from the uninstaller
+    ; path (e.g. C:\Program Files\ClipFlow\uninstall.exe).
+    ${If} $R1 == ""
+      ${GetParent} $R0 $R1
+    ${EndIf}
 
-    ; The old uninstaller must have succeeded and removed its identity. If it
-    ; failed, or the ClipFlow uninstall record survives, do not install
-    ; side-by-side — surface a manual-remediation message instead.
-    ReadRegStr $R3 HKCU "${LEGACY_UNINSTKEY}" "UninstallString"
-    ReadRegStr $R4 HKLM "${LEGACY_UNINSTKEY}" "UninstallString"
+    ; Never run the old uninstaller with an empty _?=: that would skip removal
+    ; and install side-by-side. Abort with a remediation message instead.
+    ${If} $R1 == ""
+      DetailPrint "Legacy ClipFlow install directory is empty (UninstallString='$R0', hive=$R5); cannot uninstall safely."
+      Abort "Mnemark could not determine the old ClipFlow install location. Uninstall ClipFlow from Add/Remove Programs, then run this installer again."
+    ${EndIf}
+
+    ; Run the old uninstaller passively (/P + _?=<install-dir>), matching
+    ; Tauri's stock NSIS uninstall semantics. Passive mode skips the confirm
+    ; page that gates the app-data delete checkbox, so user data in %APPDATA%
+    ; is preserved.
+    DetailPrint "Removing legacy ClipFlow installation (hive=$R5)..."
+    StrCpy $R0 '"$R0" /P _?=$R1'
+    ClearErrors
+    ExecWait '$R0' $R2
+    ${If} ${Errors}
+      DetailPrint "Legacy ClipFlow uninstaller could not be launched: $R0"
+      Abort "Mnemark could not launch the old ClipFlow uninstaller. Uninstall ClipFlow from Add/Remove Programs, then run this installer again."
+    ${EndIf}
     ${If} $R2 != 0
-    ${OrIf} $R3 != ""
-    ${OrIf} $R4 != ""
+      DetailPrint "Legacy ClipFlow uninstaller exited with code $R2."
+      Abort "Mnemark could not remove the old ClipFlow installation automatically. Uninstall ClipFlow from Add/Remove Programs, then run this installer again."
+    ${EndIf}
+
+    ; The old uninstaller must have removed its identity. Re-check only the
+    ; hive we selected, so an unrelated per-user/machine install does not
+    ; produce a false positive and abort a valid side.
+    ${If} $R5 == "HKCU"
+      ReadRegStr $R3 HKCU "${LEGACY_UNINSTKEY}" "UninstallString"
+    ${Else}
+      ReadRegStr $R3 HKLM "${LEGACY_UNINSTKEY}" "UninstallString"
+    ${EndIf}
+    ${If} $R3 != ""
       Abort "Mnemark could not remove the old ClipFlow installation automatically. Uninstall ClipFlow from Add/Remove Programs, then run this installer again."
     ${EndIf}
 

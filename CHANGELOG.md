@@ -4,6 +4,12 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.6.1] - 2026-08-18
+
+### Fixed
+
+- 修正安裝程式無法移除舊版 ClipFlow：v0.6.0 安裝程式從錯誤的製造商/產品登錄機碼讀取 `InstallLocation`，得到空值並產生空 `_?=` 的解除安裝指令，導致舊版 ClipFlow 未被移除。現改為從同一個舊版解除安裝登錄機碼（`Uninstall\ClipFlow`）同時讀取 `UninstallString` 與 `InstallLocation`（HKCU 優先、其次 HKLM，並追蹤所選 hive），正規化引號，於 `InstallLocation` 遺失時由 `UninstallString` 推導父目錄，絕不以空 `_?=` 執行；解除安裝改採 Tauri 原生被動模式（`/P` + `_?=<安裝目錄>`），分離處理啟動失敗與非零退出碼，且只複查所選 hive 避免誤判
+
 ## [0.6.0] - 2026-08-17
 
 ### Changed
@@ -272,6 +278,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.6.1]: https://github.com/LiuTouo/Mnemark/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/LiuTouo/Mnemark/compare/v0.5.7...v0.6.0
 [0.5.7]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/LiuTouo/ClipFlow/compare/v0.5.5...v0.5.6
