@@ -2,9 +2,18 @@
 //! Enabled via the `persist` config option; the database lives next to the
 //! executable (`clipflow.db`) so portable installs stay self-contained.
 
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection};
 
 use crate::models::{Clip, ClipKind};
+
+/// Minimum time between stale-row reconciliations: 72 hours, in milliseconds
+/// (the same unit as `Clip::captured_at` and the monitor's clock).
+pub const CLEANUP_INTERVAL_MS: u64 = 72 * 60 * 60 * 1000;
+
+/// Metadata key holding the last cleanup timestamp (ms since Unix epoch).
+const LAST_CLEANUP_KEY: &str = "last_cleanup";
 
 pub struct Persistence {
     conn: Connection,
@@ -27,6 +36,10 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             captured_at INTEGER NOT NULL,
             pinned INTEGER NOT NULL,
             byte_size INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
         );",
     )
     .map_err(|e| format!("Failed to initialize database schema: {}", e))
@@ -47,14 +60,16 @@ impl Persistence {
         Self { conn }
     }
 
-    /// Remove the database file (used when persistence is disabled).
-    pub fn delete_file() -> Result<(), String> {
-        let path = db_path();
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("Failed to delete {}: {}", path.display(), e))?;
-        }
-        Ok(())
+    /// Record the current time as the last-cleanup gate. Disabling persistence
+    /// calls this so the leftover DB survives a 72-hour grace before a later
+    /// startup reconciliation purges its now-stale rows.
+    pub fn record_last_cleanup(&self, now_ms: u64) -> Result<(), String> {
+        set_meta(&self.conn, LAST_CLEANUP_KEY, now_ms as i64)
+    }
+
+    /// Reconcile only when due. Returns `true` when a cleanup ran.
+    pub fn reconcile_if_due(&mut self, active_ids: &[&str], now_ms: u64) -> Result<bool, String> {
+        reconcile_if_due(&mut self.conn, active_ids, now_ms)
     }
 
     /// Load every Clip, oldest first, so in-memory insertion order and
@@ -140,6 +155,91 @@ impl Persistence {
     }
 }
 
+/// Pure, deterministic due check: cleanup is due when it has never run, or at
+/// least `CLEANUP_INTERVAL_MS` has elapsed since the last run. `now_ms` is an
+/// explicit current timestamp so tests pin the clock.
+pub fn cleanup_due(last_cleanup: Option<u64>, now_ms: u64) -> bool {
+    match last_cleanup {
+        None => true,
+        Some(t) => now_ms.saturating_sub(t) >= CLEANUP_INTERVAL_MS,
+    }
+}
+
+fn get_meta(conn: &Connection, key: &str) -> Result<Option<i64>, String> {
+    let mut stmt = conn
+        .prepare("SELECT value FROM meta WHERE key = ?1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map(params![key], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?;
+    match rows.next() {
+        Some(Ok(v)) => Ok(Some(v)),
+        Some(Err(e)) => Err(e.to_string()),
+        None => Ok(None),
+    }
+}
+
+fn set_meta(conn: &Connection, key: &str, value: i64) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn last_cleanup_ms(conn: &Connection) -> Result<Option<u64>, String> {
+    get_meta(conn, LAST_CLEANUP_KEY).map(|v| v.map(|n| n as u64))
+}
+
+fn persisted_ids(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn.prepare("SELECT id FROM clips").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut ids = Vec::new();
+    for id in rows {
+        ids.push(id.map_err(|e| e.to_string())?);
+    }
+    Ok(ids)
+}
+
+/// Delete every persisted clip whose id is absent from `active_ids`, then
+/// record `now_ms` as the last-cleanup time — all in one transaction, so the
+/// timestamp is written only after the deletions succeed (a failure rolls both
+/// back). An empty `active_ids` purges the whole table (the disabled case).
+pub fn reconcile_stale(
+    conn: &mut Connection,
+    active_ids: &[&str],
+    now_ms: u64,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let active: HashSet<&str> = active_ids.iter().copied().collect();
+    for id in persisted_ids(&tx)? {
+        if !active.contains(id.as_str()) {
+            tx.execute("DELETE FROM clips WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    set_meta(&tx, LAST_CLEANUP_KEY, now_ms as i64)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Reconcile only when due. Returns `true` when a cleanup ran.
+pub fn reconcile_if_due(
+    conn: &mut Connection,
+    active_ids: &[&str],
+    now_ms: u64,
+) -> Result<bool, String> {
+    if !cleanup_due(last_cleanup_ms(conn)?, now_ms) {
+        return Ok(false);
+    }
+    reconcile_stale(conn, active_ids, now_ms)?;
+    Ok(true)
+}
+
 fn kind_str(kind: &ClipKind) -> &'static str {
     match kind {
         ClipKind::Text => "Text",
@@ -183,6 +283,13 @@ fn upsert_on(conn: &Connection, clip: &Clip) -> Result<(), String> {
 
 fn db_path() -> std::path::PathBuf {
     crate::models::data_dir().join("clipflow.db")
+}
+
+/// True when the database file exists on disk. Used to decide whether a
+/// disabled-persistence startup should attempt stale-row reconciliation
+/// without creating a new file via `Connection::open`.
+pub fn db_exists() -> bool {
+    db_path().exists()
 }
 
 #[cfg(test)]
@@ -242,5 +349,96 @@ mod tests {
         assert!(c.pinned);
         assert!(c.truncated);
         assert_eq!(c.byte_size, original.byte_size);
+    }
+
+    #[test]
+    fn cleanup_due_never_run() {
+        assert!(cleanup_due(None, 0));
+    }
+
+    #[test]
+    fn cleanup_not_due_before_interval() {
+        let last = Some(1_000_000);
+        assert!(!cleanup_due(last, 1_000_000 + CLEANUP_INTERVAL_MS - 1));
+    }
+
+    #[test]
+    fn cleanup_due_at_and_after_interval() {
+        let last = Some(1_000_000);
+        assert!(cleanup_due(last, 1_000_000 + CLEANUP_INTERVAL_MS));
+        assert!(cleanup_due(last, 1_000_000 + CLEANUP_INTERVAL_MS + 1));
+    }
+
+    #[test]
+    fn reconcile_deletes_stale_rows_and_preserves_active() {
+        let mut p = test_persistence();
+        p.dump(&[clip("a", "ha", 1), clip("b", "hb", 2), clip("c", "hc", 3)])
+            .unwrap();
+        let now = 42_000_000;
+        reconcile_stale(&mut p.conn, &["a", "c"], now).unwrap();
+        let mut ids: Vec<String> = p.load_all().unwrap().into_iter().map(|c| c.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(last_cleanup_ms(&p.conn).unwrap(), Some(now));
+    }
+
+    #[test]
+    fn reconcile_empty_active_purges_everything() {
+        let mut p = test_persistence();
+        p.dump(&[clip("a", "ha", 1), clip("b", "hb", 2)]).unwrap();
+        reconcile_stale(&mut p.conn, &[], 7_000_000).unwrap();
+        assert!(p.load_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconcile_updates_timestamp_only_after_success() {
+        // Not due → no reconciliation runs, rows and timestamp stay put.
+        let mut p = test_persistence();
+        p.dump(&[clip("a", "ha", 1)]).unwrap();
+        p.record_last_cleanup(10_000_000).unwrap();
+        let ran = p
+            .reconcile_if_due(&[], 10_000_000 + CLEANUP_INTERVAL_MS - 1)
+            .unwrap();
+        assert!(!ran);
+        assert_eq!(p.load_all().unwrap().len(), 1);
+        assert_eq!(last_cleanup_ms(&p.conn).unwrap(), Some(10_000_000));
+    }
+
+    #[test]
+    fn reconcile_if_due_runs_after_interval() {
+        let mut p = test_persistence();
+        p.dump(&[clip("a", "ha", 1)]).unwrap();
+        p.record_last_cleanup(10_000_000).unwrap();
+        let ran = p
+            .reconcile_if_due(&[], 10_000_000 + CLEANUP_INTERVAL_MS)
+            .unwrap();
+        assert!(ran);
+        assert!(p.load_all().unwrap().is_empty());
+        assert_eq!(
+            last_cleanup_ms(&p.conn).unwrap(),
+            Some(10_000_000 + CLEANUP_INTERVAL_MS)
+        );
+    }
+
+    #[test]
+    fn disable_lifecycle_records_gate_then_purges_after_grace() {
+        // Disable: record the gate timestamp and leave rows in place.
+        let mut p = test_persistence();
+        p.dump(&[clip("a", "ha", 1)]).unwrap();
+        let disabled_at = 50_000_000;
+        p.record_last_cleanup(disabled_at).unwrap();
+        assert_eq!(p.load_all().unwrap().len(), 1);
+
+        // Within the grace period nothing is purged.
+        assert!(!p
+            .reconcile_if_due(&[], disabled_at + CLEANUP_INTERVAL_MS - 1)
+            .unwrap());
+        assert_eq!(p.load_all().unwrap().len(), 1);
+
+        // After 72h, startup reconciliation purges the stale rows.
+        assert!(p
+            .reconcile_if_due(&[], disabled_at + CLEANUP_INTERVAL_MS)
+            .unwrap());
+        assert!(p.load_all().unwrap().is_empty());
     }
 }

@@ -179,9 +179,19 @@ fn rollback_hotkey_swap(app: &tauri::AppHandle, new_hotkey: &str, old_hotkey: &s
     let _ = register_panel_hotkey(app, old_hotkey);
 }
 
+/// Current wall-clock time in milliseconds since the Unix epoch (the same unit
+/// as `Clip::captured_at` and the persistence cleanup clock).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Apply the persistence side of a config change. When enabling: open the
-/// database and dump the current in-memory History. When disabling: delete
-/// the database file, then drop the handle.
+/// database and dump the current in-memory History. When disabling: record the
+/// disable time as the durable last-cleanup gate, then drop the live connection
+/// — the DB file is left in place for a later startup to reconcile/purge.
 fn apply_persist(state: &AppState, enabled: bool) -> Result<(), String> {
     if enabled {
         let mut p = Persistence::open()?;
@@ -189,8 +199,11 @@ fn apply_persist(state: &AppState, enabled: bool) -> Result<(), String> {
         p.dump(&clips)?;
         *lock(&state.persistence) = Some(p);
     } else {
-        Persistence::delete_file()?;
-        *lock(&state.persistence) = None;
+        let mut guard = lock(&state.persistence);
+        if let Some(p) = guard.as_ref() {
+            let _ = p.record_last_cleanup(now_ms());
+        }
+        *guard = None;
     }
     Ok(())
 }
@@ -1062,10 +1075,13 @@ pub fn run(_hidden: bool) {
     let config = AppConfig::load();
     let mut history_store = HistoryStore::new();
 
-    // Optional SQLite persistence: reload history left from previous runs.
+    // Optional SQLite persistence: reload history left from previous runs, then
+    // run the 72h reconciliation when due. When disabled but a DB is left from
+    // a prior persist-enabled run, purge its stale rows after the grace period
+    // without enabling write-through.
     let persistence = if config.persist {
         match Persistence::open() {
-            Ok(p) => {
+            Ok(mut p) => {
                 match p.load_all() {
                     Ok(clips) => {
                         for clip in clips {
@@ -1074,6 +1090,12 @@ pub fn run(_hidden: bool) {
                     }
                     Err(e) => log(&format!("[ClipFlow] failed to load persisted history: {}", e)),
                 }
+                // Reconcile against the loaded history (already trimmed by the
+                // current limits), so rows evicted by limits leave the DB too.
+                let active: Vec<&str> = history_store.clips.iter().map(|c| c.id.as_str()).collect();
+                if let Err(e) = p.reconcile_if_due(&active, now_ms()) {
+                    log(&format!("[ClipFlow] persistence reconciliation failed: {}", e));
+                }
                 Some(p)
             }
             Err(e) => {
@@ -1081,6 +1103,18 @@ pub fn run(_hidden: bool) {
                 None
             }
         }
+    } else if persistence::db_exists() {
+        match Persistence::open() {
+            Ok(mut p) => {
+                // Empty active set: with persistence off, nothing is "live", so
+                // every leftover row is stale and is purged once due.
+                if let Err(e) = p.reconcile_if_due(&[], now_ms()) {
+                    log(&format!("[ClipFlow] disabled-persistence cleanup failed: {}", e));
+                }
+            }
+            Err(e) => log(&format!("[ClipFlow] failed to open persistence database: {}", e)),
+        }
+        None
     } else {
         None
     };

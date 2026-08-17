@@ -171,25 +171,12 @@ impl Default for AppConfig {
 impl AppConfig {
     /// Load config from the executable directory, or create default.
     pub fn load() -> Self {
-        let path = config_path();
-        if path.exists() {
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        } else {
-            let config = Self::default();
-            if let Ok(json) = serde_json::to_string_pretty(&config) {
-                let _ = std::fs::write(&path, json);
-            }
-            config
-        }
+        load_from(&config_path())
     }
 
     /// Save config to disk.
     pub fn save(&self) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(config_path(), json).map_err(|e| e.to_string())
+        save_to(&config_path(), self)
     }
 
     /// Clamp values that break behavior at extremes. The settings UI
@@ -206,6 +193,57 @@ impl AppConfig {
         self.debounce_ms = self.debounce_ms.min(10_000);
         self.ui_opacity_percent = self.ui_opacity_percent.clamp(50, 100);
         self
+    }
+}
+
+/// Load config from a specific path (split from `load` so tests use a temp
+/// path). Missing file → default (written back). Corrupt file → the corrupt
+/// bytes are preserved as a `.bak` and defaults are returned, so a bad config
+/// never silently destroys the user's data.
+fn load_from(path: &std::path::Path) -> AppConfig {
+    match std::fs::read_to_string(path) {
+        Ok(s) => match serde_json::from_str::<AppConfig>(&s) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                crate::log(&format!(
+                    "[ClipFlow] corrupt config; backing up and using defaults: {e}"
+                ));
+                preserve_corrupt_config(path);
+                AppConfig::default()
+            }
+        },
+        Err(_) => {
+            let config = AppConfig::default();
+            if let Ok(json) = serde_json::to_string_pretty(&config) {
+                let _ = std::fs::write(path, json);
+            }
+            config
+        }
+    }
+}
+
+/// Atomic config save: write a same-directory temp file, then rename it over
+/// the target. `std::fs::rename` maps to `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`
+/// on Windows, so partially written JSON is never exposed at the target path.
+fn save_to(path: &std::path::Path, config: &AppConfig) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::write(&tmp, json).map_err(|e| format!("Failed to write {}: {}", tmp.display(), e))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("Failed to replace {}: {}", path.display(), e))?;
+    Ok(())
+}
+
+/// Move a corrupt config aside as `clipflow.config.json.bak` so it can be
+/// recovered rather than overwritten by the next save.
+fn preserve_corrupt_config(path: &std::path::Path) {
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".bak");
+    let backup = std::path::PathBuf::from(backup);
+    if let Err(e) = std::fs::rename(path, &backup) {
+        crate::log(&format!("[ClipFlow] failed to back up corrupt config: {e}"));
     }
 }
 
@@ -371,5 +409,77 @@ mod sanitize_tests {
         }
         .sanitized();
         assert_eq!(hundred.ui_opacity_percent, 100);
+    }
+}
+
+#[cfg(test)]
+mod atomic_config_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("clipflow-{name}-{}.json", std::process::id()))
+    }
+
+    fn cleanup(path: &PathBuf) {
+        let _ = std::fs::remove_file(path);
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".bak");
+        let _ = std::fs::remove_file(PathBuf::from(bak));
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let _ = std::fs::remove_file(PathBuf::from(tmp));
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let path = temp_path("roundtrip");
+        cleanup(&path);
+        let cfg = AppConfig {
+            persist: true,
+            text_count_limit: 42,
+            ..AppConfig::default()
+        };
+        save_to(&path, &cfg).unwrap();
+        let loaded = load_from(&path);
+        assert!(loaded.persist);
+        assert_eq!(loaded.text_count_limit, 42);
+        // The temp file is gone after the atomic rename.
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        assert!(!PathBuf::from(tmp).exists());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn save_overwrites_existing_config() {
+        let path = temp_path("overwrite");
+        cleanup(&path);
+        save_to(&path, &AppConfig::default()).unwrap();
+        let next = AppConfig {
+            persist: true,
+            ..AppConfig::default()
+        };
+        save_to(&path, &next).unwrap();
+        assert!(load_from(&path).persist);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn corrupt_file_is_backed_up_and_defaults_returned() {
+        let path = temp_path("corrupt");
+        cleanup(&path);
+        std::fs::write(&path, "{ not valid json").unwrap();
+        let loaded = load_from(&path);
+        assert!(!loaded.persist);
+        assert_eq!(loaded.hotkey, AppConfig::default().hotkey);
+        // The corrupt bytes are preserved for recovery...
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".bak");
+        let bak = PathBuf::from(bak);
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "{ not valid json");
+        // ...and the original path was moved aside, not silently overwritten.
+        assert!(!path.exists());
+        cleanup(&path);
     }
 }
