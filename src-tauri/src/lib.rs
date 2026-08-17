@@ -84,7 +84,7 @@ where
 {
     let guard = lock(&state.persistence);
     if let Some(p) = guard.as_ref() {
-        let _ = f(p);
+        f(p);
     }
 }
 
@@ -211,11 +211,21 @@ fn rollback_persist(state: &AppState, failed_new_value: bool) {
 }
 
 #[tauri::command]
-fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
+fn update_config(
+    new_config: AppConfig,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
     let new_config = new_config.sanitized();
     let (old_hotkey, old_startup, old_persist, old_language, old_auto_update) = {
         let config = lock(&state.config);
-        (config.hotkey.clone(), config.startup, config.persist, config.language.clone(), config.auto_update)
+        (
+            config.hotkey.clone(),
+            config.startup,
+            config.persist,
+            config.language.clone(),
+            config.auto_update,
+        )
     };
     let mut swapped_hotkey = false;
     let mut swapped_startup = false;
@@ -248,7 +258,7 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
             register_panel_hotkey(&app, &new_config.hotkey)?;
             if let Some(old) = &old_shortcut {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let _ = app.global_shortcut().unregister(old.clone());
+                let _ = app.global_shortcut().unregister(*old);
             }
             swapped_hotkey = true;
         }
@@ -299,7 +309,9 @@ fn update_config(new_config: AppConfig, app: tauri::AppHandle, state: tauri::Sta
         let running = *lock(&state.monitor_running);
         let items = lock(&state.tray_items);
         if let Some(items) = items.as_ref() {
-            let _ = items.pause.set_text(if running { labels.pause } else { labels.resume });
+            let _ = items
+                .pause
+                .set_text(if running { labels.pause } else { labels.resume });
             let _ = items.settings.set_text(labels.settings);
             let _ = items.about.set_text(labels.about);
             let _ = items.quit.set_text(labels.quit);
@@ -367,7 +379,11 @@ fn image_data_by_id(state: &AppState, id: &str) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-async fn paste_image(app: tauri::AppHandle, id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn paste_image(
+    app: tauri::AppHandle,
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     let image_data = image_data_by_id(&state, &id)?;
     clipboard::write_image_to_clipboard(&image_data)?;
     hide_and_paste(&app).await;
@@ -501,6 +517,18 @@ fn commit_preview_window(
     // Event emission is best-effort: the active payload covers a listener that
     // races page load.
     let _ = app.emit("clip-preview-updated", payload);
+
+    // A show that finishes while the panel is hidden (paste/toggle/focus loss
+    // suspended it) must save the payload but never surface the preview alone.
+    // show_panel restores it from the saved payload on the next reopen.
+    let panel_visible = app
+        .get_webview_window("main")
+        .map(|w| w.is_visible().unwrap_or(false))
+        .unwrap_or(false);
+    if !panel_visible {
+        return Ok(());
+    }
+
     if let Err(e) = window.show() {
         // Clear the stale active payload only if we are still current, so a
         // concurrent hide/new show that already cleared or overwrote it wins.
@@ -517,6 +545,15 @@ fn hide_clip_preview(app: tauri::AppHandle) {
     hide_preview_window(&app);
 }
 
+/// Hide the Panel (and its attached preview) as a temporary suspension, keeping
+/// the saved preview payload so a later show_panel restores it. The frontend
+/// closePanel routes through here so both windows hide atomically instead of
+/// relying on the deferred (150 ms) focus-loss re-check to hide the preview.
+#[tauri::command]
+fn hide_panel_command(app: tauri::AppHandle) {
+    hide_panel(&app);
+}
+
 #[tauri::command]
 fn get_active_clip_preview(state: tauri::State<AppState>) -> Option<PreviewPayload> {
     lock(&state.preview).clone()
@@ -530,7 +567,12 @@ fn within_debounce(now: u64, last_capture_ts: u64, debounce_ms: u64) -> bool {
 /// True when this capture repeats content first observed inside the debounce
 /// window (double Ctrl+C noise). The same content observed AFTER the window
 /// is a deliberate re-copy and must be kept.
-fn is_double_copy(hash: &str, first_seen: u64, last_hash: &Option<(String, u64)>, debounce_ms: u64) -> bool {
+fn is_double_copy(
+    hash: &str,
+    first_seen: u64,
+    last_hash: &Option<(String, u64)>,
+    debounce_ms: u64,
+) -> bool {
     matches!(last_hash, Some((h, ts)) if *h == hash && within_debounce(first_seen, *ts, debounce_ms))
 }
 
@@ -623,12 +665,18 @@ impl Monitor {
                 self.pending_seq = None;
                 let content_hash = clip.content_hash.clone();
 
-                if is_double_copy(&content_hash, first_seen, &self.last_hash, config.debounce_ms) {
+                if is_double_copy(
+                    &content_hash,
+                    first_seen,
+                    &self.last_hash,
+                    config.debounce_ms,
+                ) {
                     return;
                 }
                 self.last_hash = Some((content_hash.clone(), now));
 
-                if !self.self_exe.is_empty() && clip.source_exe.eq_ignore_ascii_case(&self.self_exe) {
+                if !self.self_exe.is_empty() && clip.source_exe.eq_ignore_ascii_case(&self.self_exe)
+                {
                     if let Some((exe, title)) = lock(&self.history).source_by_hash(&content_hash) {
                         clip.source_exe = exe;
                         clip.source_title = title;
@@ -648,7 +696,9 @@ impl Monitor {
                         }
                     }
                 }
-                let _ = self.app.emit("clipboard-update", ClipboardUpdate { clip, evicted });
+                let _ = self
+                    .app
+                    .emit("clipboard-update", ClipboardUpdate { clip, evicted });
             }
             Err(clipboard::CaptureError::Locked) => {}
             Err(clipboard::CaptureError::Skip(reason)) => {
@@ -661,7 +711,13 @@ impl Monitor {
     }
 }
 
-fn start_monitor(app_handle: tauri::AppHandle, history: Arc<Mutex<HistoryStore>>, config: Arc<Mutex<AppConfig>>, monitor_running: Arc<Mutex<bool>>, persistence: Arc<Mutex<Option<Persistence>>>) {
+fn start_monitor(
+    app_handle: tauri::AppHandle,
+    history: Arc<Mutex<HistoryStore>>,
+    config: Arc<Mutex<AppConfig>>,
+    monitor_running: Arc<Mutex<bool>>,
+    persistence: Arc<Mutex<Option<Persistence>>>,
+) {
     std::thread::spawn(move || {
         let mut monitor = Monitor {
             app: app_handle,
@@ -729,6 +785,10 @@ struct PreviewPlacement {
 /// Rules: right of the panel preferred, left fallback; width clamped to the
 /// available side space; fully clamped into the work area; top aligned with
 /// the panel top; never overlaps the panel.
+// The full physical placement context (position, scale, work area, logical
+// panel geometry, preferred size) is one cohesive input set; bundling it into
+// a struct would relocate, not reduce, the call-site verbosity.
+#[allow(clippy::too_many_arguments)]
 fn place_preview(
     main_pos: (i32, i32),
     scale: f64,
@@ -851,6 +911,7 @@ fn show_panel(app: &tauri::AppHandle) {
         center_on_cursor_monitor(app, &window);
         let _ = window.show();
         let _ = window.set_focus();
+        restore_preview_if_saved(app);
     } else {
         log("[ClipFlow] creating new panel window");
         match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -911,6 +972,7 @@ fn show_panel(app: &tauri::AppHandle) {
                 });
                 let _ = w.show();
                 let _ = w.set_focus();
+                restore_preview_if_saved(app);
             }
             Err(e) => {
                 log(&format!("[ClipFlow] panel creation failed: {:?}", e));
@@ -924,8 +986,31 @@ fn hide_panel(app: &tauri::AppHandle) {
         let _ = window.hide();
     }
     // The preview is an attached part of the panel: hiding the panel (paste,
-    // toggle, focus loss) must never leave the preview visible.
-    hide_preview_window(app);
+    // toggle, focus loss) must never leave the preview visible. But this is a
+    // temporary suspend, not an explicit close — hide the preview window while
+    // keeping the saved payload (so show_panel can restore the still-open
+    // preview) and do NOT bump the generation (the still-desired show intent
+    // remains current, so an in-flight show commits its payload on schedule).
+    if let Some(window) = app.get_webview_window("clip-preview") {
+        let _ = window.hide();
+    }
+}
+
+/// Re-surface a previously suspended preview (payload saved but panel hidden)
+/// on panel reopen: reposition beside the freshly shown panel and show it.
+/// Only touches an existing preview window — a saved payload always implies the
+/// window was created by its original show commit, so no creation happens here
+/// (and thus no main-thread build is required).
+fn restore_preview_if_saved(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if lock(&state.preview).is_none() {
+        return;
+    }
+    if let Some(window) = app.get_webview_window("clip-preview") {
+        if position_preview(app, &window).is_ok() {
+            let _ = window.show();
+        }
+    }
 }
 
 /// Hide only the clip-preview window and clear its active payload. Never
@@ -1085,18 +1170,27 @@ pub fn run(_hidden: bool) {
                             history_store.insert(clip, &config);
                         }
                     }
-                    Err(e) => log(&format!("[ClipFlow] failed to load persisted history: {}", e)),
+                    Err(e) => log(&format!(
+                        "[ClipFlow] failed to load persisted history: {}",
+                        e
+                    )),
                 }
                 // Reconcile against the loaded history (already trimmed by the
                 // current limits), so rows evicted by limits leave the DB too.
                 let active: Vec<&str> = history_store.clips.iter().map(|c| c.id.as_str()).collect();
                 if let Err(e) = p.reconcile_if_due(&active, now_ms()) {
-                    log(&format!("[ClipFlow] persistence reconciliation failed: {}", e));
+                    log(&format!(
+                        "[ClipFlow] persistence reconciliation failed: {}",
+                        e
+                    ));
                 }
                 Some(p)
             }
             Err(e) => {
-                log(&format!("[ClipFlow] failed to open persistence database: {}", e));
+                log(&format!(
+                    "[ClipFlow] failed to open persistence database: {}",
+                    e
+                ));
                 None
             }
         }
@@ -1106,10 +1200,16 @@ pub fn run(_hidden: bool) {
                 // Empty active set: with persistence off, nothing is "live", so
                 // every leftover row is stale and is purged once due.
                 if let Err(e) = p.reconcile_if_due(&[], now_ms()) {
-                    log(&format!("[ClipFlow] disabled-persistence cleanup failed: {}", e));
+                    log(&format!(
+                        "[ClipFlow] disabled-persistence cleanup failed: {}",
+                        e
+                    ));
                 }
             }
-            Err(e) => log(&format!("[ClipFlow] failed to open persistence database: {}", e)),
+            Err(e) => log(&format!(
+                "[ClipFlow] failed to open persistence database: {}",
+                e
+            )),
         }
         None
     } else {
@@ -1168,19 +1268,29 @@ pub fn run(_hidden: bool) {
             #[cfg(debug_assertions)]
             {
                 let handle_debug = handle.clone();
-                if let Ok(debug_sc) = "Ctrl+Shift+I".parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                if let Ok(debug_sc) =
+                    "Ctrl+Shift+I".parse::<tauri_plugin_global_shortcut::Shortcut>()
+                {
                     use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                    let _ = app.global_shortcut().on_shortcut(debug_sc, move |_app, _sc, event| {
-                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                            show_panel(&handle_debug);
-                        }
-                    });
+                    let _ = app
+                        .global_shortcut()
+                        .on_shortcut(debug_sc, move |_app, _sc, event| {
+                            if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                                show_panel(&handle_debug);
+                            }
+                        });
                 }
             }
 
             log("[ClipFlow] hotkey registered, starting tray setup");
             // Start clipboard monitor
-            start_monitor(handle.clone(), history.clone(), config_store.clone(), monitor_running.clone(), persistence.clone());
+            start_monitor(
+                handle.clone(),
+                history.clone(),
+                config_store.clone(),
+                monitor_running.clone(),
+                persistence.clone(),
+            );
 
             // Background auto-update check (installed builds only, and only
             // when auto_update is on — portable builds never touch the updater).
@@ -1211,34 +1321,32 @@ pub fn run(_hidden: bool) {
 
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
-                .tooltip(&format!("ClipFlow v{}", env!("CARGO_PKG_VERSION")))
+                .tooltip(format!("ClipFlow v{}", env!("CARGO_PKG_VERSION")))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(move |app, event| {
-                    match event.id().as_ref() {
-                        "pause" => {
-                            let state = app.state::<AppState>();
-                            let mut running = lock(&state.monitor_running);
-                            *running = !*running;
-                            let lang = lock(&state.config).language.clone();
-                            let labels = tray_labels(&lang);
-                            let _ = pause_item_handle.set_text(if *running {
-                                labels.pause
-                            } else {
-                                labels.resume
-                            });
-                        }
-                        "settings" => {
-                            let _ = open_settings_window(app);
-                        }
-                        "about" => {
-                            let _ = open_about_dialog(app);
-                        }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "pause" => {
+                        let state = app.state::<AppState>();
+                        let mut running = lock(&state.monitor_running);
+                        *running = !*running;
+                        let lang = lock(&state.config).language.clone();
+                        let labels = tray_labels(&lang);
+                        let _ = pause_item_handle.set_text(if *running {
+                            labels.pause
+                        } else {
+                            labels.resume
+                        });
                     }
+                    "settings" => {
+                        let _ = open_settings_window(app);
+                    }
+                    "about" => {
+                        let _ = open_about_dialog(app);
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
                 })
                 .build(app)?;
             log("[ClipFlow] tray built successfully");
@@ -1269,6 +1377,7 @@ pub fn run(_hidden: bool) {
             copy_only_files,
             show_clip_preview,
             hide_clip_preview,
+            hide_panel_command,
             get_active_clip_preview,
             update::update_channel,
             update::check_for_updates,
@@ -1469,18 +1578,14 @@ mod center_coords_tests {
     #[test]
     fn extreme_monitor_position_saturates_to_i32_range() {
         // i64 center would overflow i32 — the saturating clamp keeps it in range.
-        let (x, y) = center_coords(
-            (i32::MAX - 100, i32::MIN + 100),
-            (2000, 2000),
-            (480, 620),
-        );
+        let (x, y) = center_coords((i32::MAX - 100, i32::MIN + 100), (2000, 2000), (480, 620));
         // x: center adds (2000-480)/2=760, overflows i32 → saturates at i32::MAX.
         assert_eq!(x, i32::MAX);
         // y: center adds (2000-620)/2=690 → i32::MIN+100+690 = i32::MIN+790, fits.
         assert_eq!(y, i32::MIN + 790);
         // Neither wrapped.
         assert!(x >= i32::MAX - 100);
-        assert!(y >= i32::MIN);
+        assert!(y > i32::MIN);
         assert!(y <= i32::MIN + 1000);
     }
 }

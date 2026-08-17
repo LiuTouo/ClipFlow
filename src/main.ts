@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { setLanguage, applyI18n, t, localizeBackendError } from "./i18n";
 import { applyTheme } from "./theme";
+import { PreviewController } from "./preview-state";
 
 interface Clip {
   id: string;
@@ -40,16 +41,14 @@ let rememberHistoryFilter = false;
 let activeFilter: FilterKind = "all";
 let openMenuClipId: string | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
-let hoveredClipId: string | null = null;
-let spacePressed = false;
-let pointerOverPreview = false;
-let previewHideTimer: ReturnType<typeof setTimeout> | null = null;
-// Whether the search box had focus when the Hover+Space preview latched.
-// Used to restore focus on release only when it was focused before preview.
-let searchFocusedBeforePreview = false;
+// Press-Space preview toggle state machine. Owns the visibility flag, the
+// intent token that resolves show/hide/resync races, and the held-Space
+// repeat-suppression flag. Backend get_active_clip_preview stays the authority;
+// see preview-state.ts.
+const previewState = new PreviewController();
 // One-time onboarding hint: stays visible until the first successful preview.
 let previewHintSeen = false;
-// Fade-in timer for the per-row "hold to preview" hint (single hover at a time).
+// Fade-in timer for the per-row preview hint (single hover at a time).
 let previewHintTimer: ReturnType<typeof setTimeout> | null = null;
 
 const PREVIEW_HINT_SEEN_KEY = "clipflow.previewHintSeen.v1";
@@ -135,12 +134,11 @@ async function init() {
   // regains focus so changes made in Settings take effect on next open.
   await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
     if (!focused) return; // composite external-focus-loss hiding is backend-owned
-    // Main regained focus: hide any preview left active while focus was in the
-    // preview window and reset hover/pointer/timer state. The hide invoke is
-    // issued before any later Space keydown can request a new show, so a fresh
-    // show stays authoritative. The physical Space latch is intentionally left
-    // intact so a held Space keeps suppressing repeat input.
-    resetPreviewOnFocus();
+    // Main regained focus. An open preview survives a focus bounce to the
+    // preview window and back; resync adopts backend truth, so a suspended
+    // preview (panel hidden by paste/toggle/focus-loss, payload preserved) is
+    // restored, while an explicit close stays closed.
+    resyncPreviewState();
     refreshConfig().then(() => {
       applyI18n();
       searchInput.value = "";
@@ -174,17 +172,13 @@ async function init() {
     render();
   });
 
-  // Preview window ↔ main panel sync: the preview reports its pointer
-  // enter/leave and its own Space-release so a hovered preview never gets
-  // stuck while the cursor crosses between windows.
-  await listen<boolean>("clip-preview-pointer", (event) => {
-    pointerOverPreview = event.payload;
-    if (!pointerOverPreview && spacePressed && hoveredClipId === null) {
-      schedulePreviewHide();
-    }
-  });
-  await listen("clip-preview-space-released", () => {
-    releasePreview();
+  // The preview window closes itself on Space/Escape when it owns focus. It
+  // emits this only after its own hide_clip_preview resolves, but we still do
+  // not treat it as proof of backend state — resync from the backend so a
+  // concurrent show in this panel (hover-then-Space while the preview window
+  // was closing) still wins.
+  await listen("clip-preview-closed", () => {
+    resyncPreviewState();
   });
 }
 
@@ -222,11 +216,10 @@ function render() {
   });
   visibleClips = filtered;
 
-  // If the hovered row was removed (search/filter change, delete, or
-  // eviction), drop its hover state and any preview it was showing.
-  if (hoveredClipId && !visibleClips.some(c => c.id === hoveredClipId)) {
-    hoveredClipId = null;
-    if (spacePressed) hidePreview();
+  // If the previewed clip is no longer visible (deleted, evicted, or filtered
+  // out by search/filter), close the preview so it never shows a ghost.
+  if (previewState.isOpen && !visibleClips.some(c => c.id === previewState.currentId)) {
+    hidePreview();
   }
 
   // Selection indexes into visibleClips — keep it in range after any
@@ -297,8 +290,8 @@ function render() {
     el.dataset.index = String(index);
     el.dataset.clipId = clip.id;
 
-    // Right-side "hold to preview" hint (Space keycap + label), collapsed
-    // until the row is hovered. Non-interactive and never overlaps actions.
+    // Right-side preview hint (Space keycap + label), collapsed until the row
+    // is hovered. Non-interactive and never overlaps actions.
     const hint = document.createElement("div");
     hint.className = "clip-preview-hint";
     const hintKeycap = document.createElement("kbd");
@@ -306,7 +299,7 @@ function render() {
     hintKeycap.setAttribute("aria-hidden", "true");
     hintKeycap.textContent = "Space";
     const hintLabel = document.createElement("span");
-    hintLabel.textContent = t("holdToPreview");
+    hintLabel.textContent = t("pressToPreview");
     hint.append(hintKeycap, hintLabel);
 
     // Click row body = paste. Action buttons stop propagation.
@@ -314,15 +307,12 @@ function render() {
       pasteClip(clip);
     });
 
-    // Hover tracking for the Hover+Space preview (does not alter paste).
+    // Hover tracking for the press-Space preview (does not alter paste).
     el.addEventListener("pointerenter", () => {
-      hoveredClipId = clip.id;
-      if (spacePressed) showPreview(clip.id);
+      if (previewState.isOpen) showPreview(clip.id);
       scheduleRowHint(hint);
     });
     el.addEventListener("pointerleave", () => {
-      if (hoveredClipId === clip.id) hoveredClipId = null;
-      if (spacePressed) schedulePreviewHide();
       clearRowHint(hint);
     });
 
@@ -565,28 +555,37 @@ async function togglePin(clip: Clip) {
 }
 
 async function closePanel() {
-  cancelPreview();
-  await getCurrentWindow().hide();
+  // Route through the backend suspension primitive so main + preview hide
+  // atomically (no 150 ms focus-loss gap), while the saved preview payload —
+  // and thus the still-enabled toggle — is preserved for reopen. Only an
+  // explicit close (Space/Escape) clears the toggle state.
+  await invoke("hide_panel_command");
 }
 
-// === Hover+Space Preview ===
-// Point at a row and hold Space to open a side preview window. Hover alone
-// never opens it; Space with no hovered row stays normal search input.
-function cancelPreviewHide() {
-  if (previewHideTimer) {
-    clearTimeout(previewHideTimer);
-    previewHideTimer = null;
-  }
-}
-
+// === Press-Space Preview ===
+// Point at a row and press Space to toggle the side preview window. Pressing
+// again closes it; Escape also closes it. Hover alone never opens it; Space
+// with no hovered row stays normal search input. Closing the panel instead
+// suspends it — the preview toggle stays enabled and is restored on reopen.
 function showPreview(id: string) {
-  cancelPreviewHide();
+  hideAllRowHints();
+  // Optimistically mark open: the toggle must reflect the press immediately so
+  // key-repeat suppression and hover-to-update behave. The returned token
+  // guards this show's completion against any newer show/hide mutation.
+  const token = previewState.beginShow(id);
   invoke("show_clip_preview", { id })
     .then(() => {
+      // The backend committed this show. Re-adopt it even if an earlier
+      // resync read (which ran before the commit) saw the backend still null;
+      // a newer show/hide mutation still wins via the token.
+      previewState.resolveShow(token, id);
       markPreviewHintSeen();
     })
     .catch((err) => {
       console.error("Failed to show preview:", err);
+      // Backend truth is unknown only while this is still the newest mutation;
+      // a newer intent's completion owns the state otherwise.
+      if (previewState.isCurrent(token)) resyncPreviewState();
     });
 }
 
@@ -621,11 +620,11 @@ function markPreviewHintSeen() {
   updatePreviewHintStrip();
 }
 
-/** Fade in the row hint after the hover delay, unless the Space latch is
- * already active. */
+/** Fade in the row hint after the hover delay, unless a preview is already
+ * open. */
 function scheduleRowHint(hint: HTMLElement) {
   clearRowHint(hint);
-  if (spacePressed) return;
+  if (previewState.isOpen) return;
   previewHintTimer = setTimeout(() => {
     previewHintTimer = null;
     hint.classList.add("visible");
@@ -641,7 +640,7 @@ function clearRowHint(hint: HTMLElement) {
   hint.classList.remove("visible");
 }
 
-/** Hide every row hint at once (on Space latch activation). */
+/** Hide every row hint at once (on preview open). */
 function hideAllRowHints() {
   if (previewHintTimer) {
     clearTimeout(previewHintTimer);
@@ -653,77 +652,27 @@ function hideAllRowHints() {
 }
 
 function hidePreview() {
-  cancelPreviewHide();
-  pointerOverPreview = false;
-  invoke("hide_clip_preview").catch((err) => {
-    console.error("Failed to hide preview:", err);
-  });
+  // Do NOT clear the toggle flag here: a hide is confirmed only once
+  // hide_clip_preview resolves. Keeping it "open" until then lets a concurrent
+  // newer show/hide win via the intent token instead of a stale completion.
+  const token = previewState.beginHide();
+  invoke("hide_clip_preview")
+    .then(() => previewState.resolveHide(token))
+    .catch((err) => {
+      console.error("Failed to hide preview:", err);
+      if (previewState.isCurrent(token)) resyncPreviewState();
+    });
 }
 
-// Bridge the physical gap between a row and the separate preview window:
-// leaving a row while Space is still held waits a short grace for the cursor
-// to land in the preview (which emits clip-preview-pointer=true) before hiding.
-function schedulePreviewHide() {
-  cancelPreviewHide();
-  previewHideTimer = setTimeout(() => {
-    previewHideTimer = null;
-    if (spacePressed && hoveredClipId === null && !pointerOverPreview) {
-      hidePreview();
-    }
-  }, 150);
-}
-
-/** Reset preview visibility + local hover/pointer/timer state. Does NOT touch
- * the physical Space latch (spacePressed) or search focus — those clear only on
- * an authoritative release, so a held Space keeps suppressing repeat input
- * across focus gain, backend preview hide, and pointer leave. */
-function resetLocalPreviewState() {
-  hoveredClipId = null;
-  pointerOverPreview = false;
-  cancelPreviewHide();
-}
-
-/** Restore search focus after the preview latch clears, only when the search
- * box was focused before preview and no other control/window took focus.
- * Deferred to a microtask so the released Space keyup is fully processed first
- * and cannot insert into the freshly-focused input. */
-function restoreSearchFocus() {
-  queueMicrotask(() => {
-    const active = document.activeElement;
-    if (active && active !== searchInput && active !== document.body && active !== document.documentElement) {
-      return; // another control intentionally holds focus
-    }
-    if (!document.hasFocus()) return; // panel no longer the active window
-    searchInput.focus();
-  });
-}
-
-/** Cancel the latch without restoring focus — panel close/destroy. */
-function cancelPreview() {
-  spacePressed = false;
-  resetLocalPreviewState();
-  searchFocusedBeforePreview = false;
-  hidePreview();
-}
-
-/** Authoritative release (physical Space keyup, clip-preview-space-released,
- * or Escape). Cancels the latch and restores search focus only when it was
- * focused before the preview latched. */
-function releasePreview() {
-  const restore = searchFocusedBeforePreview;
-  cancelPreview();
-  if (restore) restoreSearchFocus();
-}
-
-/** Main window regained focus. When the physical Space latch is active, do
- * nothing to preview/hover/pointer state and leave search unfocused — the held
- * Space keeps its preview and keeps suppressing repeat input across the focus
- * transition the unfocused preview show triggers. Only with no latch does a
- * stale preview/local state get cleaned up. */
-function resetPreviewOnFocus() {
-  if (spacePressed) return;
-  resetLocalPreviewState();
-  hidePreview();
+/** Adopt backend truth: get_active_clip_preview is the authority for whether a
+ * preview is actually shown. Used on panel focus regain, on preview-window
+ * close, and on show/hide failure. Guarded by its own token so a slow query
+ * can never overwrite a newer intent. */
+function resyncPreviewState() {
+  const token = previewState.beginResync();
+  invoke<{ id: string } | null>("get_active_clip_preview")
+    .then((active) => previewState.resolveResync(token, active ? active.id : null))
+    .catch(() => {});
 }
 
 /** True when the event is the Spacebar, by physical code first (stable across
@@ -733,10 +682,10 @@ function isSpaceKey(e: KeyboardEvent): boolean {
 }
 
 /** Clip id of the live row currently under the pointer, or null. Reads the
- * live :hover state rather than the hoveredClipId variable, so a re-render
- * that rebuilt the rows under a stationary cursor can't leave a stale value in
- * either direction (a row under the pointer with no pointerenter, or a row
- * that's gone with a lingering pointerleave). */
+ * live :hover state directly, so a re-render that rebuilt the rows under a
+ * stationary cursor can't leave a stale value in either direction (a row under
+ * the pointer with no pointerenter, or a row that's gone with a lingering
+ * pointerleave). */
 function hoveredRowId(): string | null {
   const row = clipList.querySelector<HTMLElement>(".clip-item:hover");
   return row?.dataset.clipId ?? null;
@@ -868,11 +817,11 @@ document.addEventListener("keydown", (e) => {
       return;
     case "Escape":
       e.preventDefault();
-      // A preview open (Space held) closes only the preview — Escape must
-      // not fall through to closePanel and hide the history panel.
-      if (spacePressed) {
+      // A preview open closes only the preview — Escape must not fall
+      // through to closePanel and hide the history panel.
+      if (previewState.isOpen) {
         e.stopPropagation();
-        releasePreview();
+        hidePreview();
         return;
       }
       // If action menu is open, first Escape closes only the menu
@@ -899,54 +848,42 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Hover+Space: capture Space before the search input or the vim/char handler
-// below sees it. Intercepts only when a live row is under the pointer —
-// otherwise Space falls through and types normally. Registered on window
-// (earliest capture phase) so no listener registration order can slip ahead.
+// Press-Space toggle: capture Space before the search input or the vim/char
+// handler below sees it. Registered on window (earliest capture phase) so no
+// listener registration order can slip ahead.
 window.addEventListener("keydown", (e) => {
   if (!isSpaceKey(e)) return;
-  // Latched: once the initial Space was captured, every Space keydown until
-  // keyup is swallowed unconditionally — held-Space auto-repeat must never
-  // type into search even after the preview window steals focus or the row's
-  // :hover state drops. A newly hovered row while held re-shows via the row's
-  // pointerenter handler, not here.
-  if (spacePressed) {
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    return;
+  const action = previewState.decideSpaceKeydown(e.repeat, hoveredRowId());
+  switch (action.type) {
+    case "swallow":
+      // Auto-repeat of a held opening/closing press: swallow until keyup so it
+      // never inserts whitespace or re-toggles.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
+    case "close":
+      // Preview open: Space closes it, even with no row hovered or the pointer
+      // over the preview window.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      previewState.consumeSpace();
+      hidePreview();
+      return;
+    case "open":
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      previewState.consumeSpace();
+      showPreview(action.id);
+      return;
+    case "ignore":
+      return; // no live row — Space stays normal search input
   }
-  if (e.repeat) return; // repeat never starts a fresh preview
-  const id = hoveredRowId();
-  if (!id) return; // no live row — Space stays normal input
-  e.preventDefault();
-  e.stopImmediatePropagation();
-  spacePressed = true;
-  hideAllRowHints();
-  // The preview window is shown unfocused (backend `.focused(false)`), so the
-  // search box keeps window focus. Record whether it was focused and blur it
-  // so held-Space auto-repeat cannot type into it while the latch is active;
-  // focus is restored on release by releasePreview().
-  searchFocusedBeforePreview = document.activeElement === searchInput;
-  if (searchFocusedBeforePreview) searchInput.blur();
-  showPreview(id);
 }, true);
 
-// Space keyup closes the preview regardless of where focus has moved.
+// A consumed Space press ends at keyup; releasing must not close the preview,
+// only re-arm ordinary Space input.
 window.addEventListener("keyup", (e) => {
-  if (isSpaceKey(e) && spacePressed) {
-    releasePreview();
-  }
-}, true);
-
-// Input-layer suppression: while the preview latch is active, block any
-// whitespace insertion into the (normally focused) search box. This catches
-// paths the keydown suppression cannot — auto-repeat, or a Space delivered
-// while focus is momentarily elsewhere — without erasing existing search text.
-window.addEventListener("beforeinput", (e) => {
-  if (!spacePressed) return;
-  if (e.inputType === "insertText" && (e.data == null || /^\s+$/.test(e.data))) {
-    e.preventDefault();
-  }
+  if (isSpaceKey(e)) previewState.releaseSpace();
 }, true);
 
 // Reset selected on new search input

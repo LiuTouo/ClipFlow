@@ -21,7 +21,6 @@ const contentEl = document.getElementById("preview-content")!;
 const sourceEl = document.getElementById("preview-source")!;
 const capturedEl = document.getElementById("preview-captured")!;
 const sizeEl = document.getElementById("preview-size")!;
-const panelEl = document.getElementById("preview-panel")!;
 
 function typeLabel(kind: PreviewPayload["kind"]): string {
   switch (kind) {
@@ -114,19 +113,18 @@ async function init() {
 
   await listen<PreviewPayload>("clip-preview-updated", (event) => render(event.payload));
 
-  // Report pointer enter/leave so the main panel can keep the preview open
-  // while Space is held as the cursor crosses between the two windows.
-  panelEl.addEventListener("pointerenter", () => { void emit("clip-preview-pointer", true); });
-  panelEl.addEventListener("pointerleave", () => { void emit("clip-preview-pointer", false); });
-
-  // Space release or Escape in this window closes the preview and tells the
-  // main panel to reset its held-Space state.
-  document.addEventListener("keyup", (e) => {
-    if (e.key === " " || e.key === "Escape") {
-      e.preventDefault();
-      invoke("hide_clip_preview").catch(() => {});
-      void emit("clip-preview-space-released");
-    }
+  // Space or Escape in this window closes the preview and tells the main panel
+  // to reset its toggle state. Space is handled on keydown so a press — not a
+  // release — closes the preview, matching the panel's press-to-toggle gesture.
+  // clip-preview-closed is emitted only after hide_clip_preview resolves, so
+  // the main panel never treats an optimistic close as backend-confirmed.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== " " && e.key !== "Escape") return;
+    if (e.repeat) return;
+    e.preventDefault();
+    invoke("hide_clip_preview")
+      .then(() => { void emit("clip-preview-closed"); })
+      .catch(() => {});
   });
 
   // Cover the first-load race: the backend may already hold an active preview
