@@ -1,4 +1,4 @@
-use crate::models::{Clip, ClipKind, AppConfig};
+use crate::models::{AppConfig, Clip, ClipKind};
 
 pub struct HistoryStore {
     pub clips: Vec<Clip>,
@@ -6,14 +6,20 @@ pub struct HistoryStore {
 
 impl HistoryStore {
     pub fn new() -> Self {
-        Self { clips: Vec::with_capacity(128) }
+        Self {
+            clips: Vec::with_capacity(128),
+        }
     }
 
     /// Insert a Clip, deduplicating by content hash. Returns the stored Clip
     /// plus the ids of any Clips evicted by capacity limits (so callers can
     /// keep persistence in sync).
     pub fn insert(&mut self, clip: Clip, config: &AppConfig) -> (Clip, Vec<String>) {
-        if let Some(existing) = self.clips.iter_mut().find(|c| c.content_hash == clip.content_hash) {
+        if let Some(existing) = self
+            .clips
+            .iter_mut()
+            .find(|c| c.content_hash == clip.content_hash)
+        {
             existing.captured_at = clip.captured_at;
             existing.source_exe = clip.source_exe.clone();
             existing.source_title = clip.source_title.clone();
@@ -29,7 +35,11 @@ impl HistoryStore {
     }
 
     fn move_to_front(&mut self, content_hash: &str) {
-        if let Some(pos) = self.clips.iter().position(|c| c.content_hash == content_hash) {
+        if let Some(pos) = self
+            .clips
+            .iter()
+            .position(|c| c.content_hash == content_hash)
+        {
             if pos != 0 {
                 let item = self.clips.remove(pos);
                 self.clips.insert(0, item);
@@ -56,21 +66,45 @@ impl HistoryStore {
 
         // Evict oldest unpinned non-image Clips
         loop {
-            let text_count = self.clips.iter().filter(|c| c.kind != ClipKind::Image).count();
-            if text_count <= config.text_count_limit { break; }
+            let text_count = self
+                .clips
+                .iter()
+                .filter(|c| c.kind != ClipKind::Image)
+                .count();
+            if text_count <= config.text_count_limit {
+                break;
+            }
             let idx = Self::oldest_unpinned(&self.clips, |c| c.kind != ClipKind::Image);
-            if let Some(i) = idx { evicted.push(self.clips.remove(i).id); } else { break; }
+            if let Some(i) = idx {
+                evicted.push(self.clips.remove(i).id);
+            } else {
+                break;
+            }
         }
 
         // Evict oldest unpinned image Clips by count + memory
-        let image_memory_limit = (config.image_memory_budget_mb as u64) * 1024 * 1024;
+        let image_memory_limit = config.image_memory_budget_mb * 1024 * 1024;
         loop {
-            let image_count = self.clips.iter().filter(|c| c.kind == ClipKind::Image).count();
-            let image_memory: u64 = self.clips.iter()
-                .filter(|c| c.kind == ClipKind::Image).map(|c| c.byte_size).sum();
-            if image_count <= config.image_count_limit && image_memory <= image_memory_limit { break; }
+            let image_count = self
+                .clips
+                .iter()
+                .filter(|c| c.kind == ClipKind::Image)
+                .count();
+            let image_memory: u64 = self
+                .clips
+                .iter()
+                .filter(|c| c.kind == ClipKind::Image)
+                .map(|c| c.byte_size)
+                .sum();
+            if image_count <= config.image_count_limit && image_memory <= image_memory_limit {
+                break;
+            }
             let idx = Self::oldest_unpinned(&self.clips, |c| c.kind == ClipKind::Image);
-            if let Some(i) = idx { evicted.push(self.clips.remove(i).id); } else { break; }
+            if let Some(i) = idx {
+                evicted.push(self.clips.remove(i).id);
+            } else {
+                break;
+            }
         }
 
         evicted
@@ -92,7 +126,9 @@ impl HistoryStore {
 
     fn sort_display(clips: &mut [Clip]) {
         clips.sort_by(|a, b| {
-            b.pinned.cmp(&a.pinned).then(b.captured_at.cmp(&a.captured_at))
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.captured_at.cmp(&a.captured_at))
         });
     }
 
@@ -107,9 +143,10 @@ impl HistoryStore {
     /// gets "not an image" instead of a misleading "not found".
     pub fn get_clip_image(&self, id: &str) -> Result<Vec<u8>, String> {
         match self.clips.iter().find(|c| c.id == id) {
-            Some(c) if c.kind == ClipKind::Image => {
-                c.image_data.clone().ok_or_else(|| "Image data missing".to_string())
-            }
+            Some(c) if c.kind == ClipKind::Image => c
+                .image_data
+                .clone()
+                .ok_or_else(|| "Image data missing".to_string()),
             Some(_) => Err("Clip is not an image".to_string()),
             None => Err("Clip not found".to_string()),
         }
@@ -150,7 +187,6 @@ impl HistoryStore {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,7 +220,10 @@ mod tests {
         // push() had just placed the new Clip — so a full history discarded
         // every fresh capture and kept the oldest Clips forever.
         let mut h = HistoryStore::new();
-        let cfg = AppConfig { text_count_limit: 3, ..AppConfig::default() };
+        let cfg = AppConfig {
+            text_count_limit: 3,
+            ..AppConfig::default()
+        };
         for i in 1..=3 {
             h.insert(text_clip(&format!("c{i}"), i), &cfg);
         }
@@ -197,7 +236,10 @@ mod tests {
     #[test]
     fn pinned_clips_are_never_evicted() {
         let mut h = HistoryStore::new();
-        let cfg = AppConfig { text_count_limit: 3, ..AppConfig::default() };
+        let cfg = AppConfig {
+            text_count_limit: 3,
+            ..AppConfig::default()
+        };
         for i in 1..=3 {
             h.insert(text_clip(&format!("c{i}"), i), &cfg);
         }
