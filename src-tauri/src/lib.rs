@@ -200,10 +200,7 @@ fn apply_persist(state: &AppState, enabled: bool) -> Result<(), String> {
         *lock(&state.persistence) = Some(p);
     } else {
         let mut guard = lock(&state.persistence);
-        if let Some(p) = guard.as_ref() {
-            let _ = p.record_last_cleanup(now_ms());
-        }
-        *guard = None;
+        persistence::disable(&mut guard, now_ms())?;
     }
     Ok(())
 }

@@ -155,6 +155,18 @@ impl Persistence {
     }
 }
 
+/// Disable persistence: record the durable last-cleanup gate, then drop the
+/// live connection. If the gate write fails the connection is left installed so
+/// the caller surfaces the error (and rollback stays truthful) instead of
+/// reporting success without a stored 72-hour baseline.
+pub fn disable(persistence: &mut Option<Persistence>, now_ms: u64) -> Result<(), String> {
+    if let Some(p) = persistence.as_ref() {
+        p.record_last_cleanup(now_ms)?;
+    }
+    *persistence = None;
+    Ok(())
+}
+
 /// Pure, deterministic due check: cleanup is due when it has never run, or at
 /// least `CLEANUP_INTERVAL_MS` has elapsed since the last run. `now_ms` is an
 /// explicit current timestamp so tests pin the clock.
@@ -303,6 +315,15 @@ mod tests {
         Persistence::from_conn(conn)
     }
 
+    /// A live connection whose `meta` table is gone, so `record_last_cleanup`
+    /// (an INSERT into `meta`) fails deterministically.
+    fn persistence_without_meta() -> Persistence {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch("DROP TABLE meta").unwrap();
+        Persistence::from_conn(conn)
+    }
+
     fn clip(id: &str, hash: &str, captured_at: u64) -> Clip {
         Clip {
             id: id.to_string(),
@@ -418,6 +439,22 @@ mod tests {
             last_cleanup_ms(&p.conn).unwrap(),
             Some(10_000_000 + CLEANUP_INTERVAL_MS)
         );
+    }
+
+    #[test]
+    fn disable_writes_gate_then_drops_connection() {
+        let mut p = test_persistence();
+        p.dump(&[clip("a", "ha", 1)]).unwrap();
+        let mut opt = Some(p);
+        disable(&mut opt, 5_000_000).unwrap();
+        assert!(opt.is_none());
+    }
+
+    #[test]
+    fn disable_keeps_connection_when_gate_write_fails() {
+        let mut opt = Some(persistence_without_meta());
+        assert!(disable(&mut opt, 5_000_000).is_err());
+        assert!(opt.is_some(), "gate write failure must not drop the connection");
     }
 
     #[test]
