@@ -206,7 +206,9 @@ pub fn last_cleanup_ms(conn: &Connection) -> Result<Option<u64>, String> {
 }
 
 fn persisted_ids(conn: &Connection) -> Result<Vec<String>, String> {
-    let mut stmt = conn.prepare("SELECT id FROM clips").map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id FROM clips")
+        .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
@@ -454,7 +456,10 @@ mod tests {
     fn disable_keeps_connection_when_gate_write_fails() {
         let mut opt = Some(persistence_without_meta());
         assert!(disable(&mut opt, 5_000_000).is_err());
-        assert!(opt.is_some(), "gate write failure must not drop the connection");
+        assert!(
+            opt.is_some(),
+            "gate write failure must not drop the connection"
+        );
     }
 
     #[test]

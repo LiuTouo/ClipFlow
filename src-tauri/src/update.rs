@@ -21,7 +21,10 @@ use tauri::Manager;
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// Decode a REG_SZ/REG_EXPAND_SZ value from a raw u16 buffer. `len_bytes`
@@ -29,7 +32,7 @@ fn to_wide(s: &str) -> Vec<u16> {
 /// stripped only when present (the API does not guarantee it for every
 /// value type, and blindly dropping the last unit eats a real character).
 fn parse_reg_sz(buf: &[u16], len_bytes: usize) -> Option<String> {
-    if len_bytes < 2 || len_bytes % 2 != 0 {
+    if len_bytes < 2 || !len_bytes.is_multiple_of(2) {
         return None;
     }
     let mut units = &buf[..len_bytes / 2];
@@ -47,8 +50,8 @@ fn parse_reg_sz(buf: &[u16], len_bytes: usize) -> Option<String> {
 fn install_location_from_registry() -> Option<PathBuf> {
     use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
-        HKEY_LOCAL_MACHINE, KEY_READ, REG_EXPAND_SZ, REG_SZ,
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+        KEY_READ, REG_EXPAND_SZ, REG_SZ,
     };
 
     let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\ClipFlow");
@@ -102,7 +105,11 @@ pub fn is_installed_build() -> bool {
 
 #[tauri::command]
 pub fn update_channel() -> &'static str {
-    if is_installed_build() { "installed" } else { "portable" }
+    if is_installed_build() {
+        "installed"
+    } else {
+        "portable"
+    }
 }
 
 /// The minisign public key, mirrored from tauri.conf.json
@@ -118,7 +125,9 @@ const MAX_DOWNLOAD_BYTES: u64 = 128 * 1024 * 1024;
 /// re-validated: the webview supplies these URLs and must not pivot elsewhere.
 fn is_allowed_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("github.com")
-        || host.to_ascii_lowercase().ends_with(".githubusercontent.com")
+        || host
+            .to_ascii_lowercase()
+            .ends_with(".githubusercontent.com")
 }
 
 /// Enforce https + the host allowlist on an absolute URL. Applied to the
@@ -190,8 +199,8 @@ fn verify_with_pubkey(data: &[u8], sig_file: &str, pubkey_b64: &str) -> Result<(
         .decode(sig_file.trim())
         .map_err(|e| format!("Bad signature encoding: {e}"))?;
     let sig_text = String::from_utf8(sig_text).map_err(|e| e.to_string())?;
-    let signature = minisign_verify::Signature::decode(&sig_text)
-        .map_err(|e| format!("Bad signature: {e}"))?;
+    let signature =
+        minisign_verify::Signature::decode(&sig_text).map_err(|e| format!("Bad signature: {e}"))?;
 
     // The pubkey base64-decodes to the minisign.pub text format
     // ("untrusted comment: ...\n<key base64>"), which PublicKey::decode reads.
@@ -275,8 +284,14 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheck, Str
         .await
         .map_err(|e| e.to_string())?;
     Ok(match update {
-        Some(u) => UpdateCheck { status: "available".to_string(), version: Some(u.version) },
-        None => UpdateCheck { status: "up_to_date".to_string(), version: None },
+        Some(u) => UpdateCheck {
+            status: "available".to_string(),
+            version: Some(u.version),
+        },
+        None => UpdateCheck {
+            status: "up_to_date".to_string(),
+            version: None,
+        },
     })
 }
 
@@ -382,8 +397,14 @@ pub fn spawn_auto_update_check(app: tauri::AppHandle, config: Arc<Mutex<AppConfi
             }
         };
 
-        crate::log(&format!("[ClipFlow] auto-update: installing v{}", update.version));
-        if let Err(e) = update.download_and_install(|_chunk, _total| {}, || {}).await {
+        crate::log(&format!(
+            "[ClipFlow] auto-update: installing v{}",
+            update.version
+        ));
+        if let Err(e) = update
+            .download_and_install(|_chunk, _total| {}, || {})
+            .await
+        {
             crate::log(&format!("[ClipFlow] auto-update install failed: {e}"));
             return;
         }
@@ -396,7 +417,6 @@ pub fn spawn_auto_update_check(app: tauri::AppHandle, config: Arc<Mutex<AppConfi
         }
     });
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -437,7 +457,7 @@ mod tests {
     fn reg_sz_with_terminator_is_decoded() {
         let mut buf = wide("C:\\Apps\\ClipFlow");
         buf.push(0);
-        let len_bytes = (buf.len() * 2) as usize;
+        let len_bytes = buf.len() * 2;
         assert_eq!(
             parse_reg_sz(&buf, len_bytes).as_deref(),
             Some("C:\\Apps\\ClipFlow")
@@ -448,7 +468,7 @@ mod tests {
     fn reg_sz_without_terminator_is_decoded_whole() {
         // The API does not guarantee a terminating null for every type.
         let buf = wide("C:\\Apps\\ClipFlow");
-        let len_bytes = (buf.len() * 2) as usize;
+        let len_bytes = buf.len() * 2;
         assert_eq!(
             parse_reg_sz(&buf, len_bytes).as_deref(),
             Some("C:\\Apps\\ClipFlow")
@@ -474,14 +494,14 @@ mod tests {
             assert!(validate_download_url(good).is_ok(), "should accept: {good}");
         }
         for bad in [
-            "http://github.com/x",           // plain http
+            "http://github.com/x", // plain http
             "https://evil.com/x",
             "https://github.com.evil.com/x", // lookalike suffix
             "https://github.com@evil.com/x", // userinfo hides the real host
             "https://evilgithubusercontent.com/x",
             "ftp://github.com/x",
-            "github.com/x", // no scheme
-            "https:///x",   // empty host
+            "github.com/x",   // no scheme
+            "https:///x",     // empty host
             "/relative/path", // redirects must stay absolute
         ] {
             assert!(validate_download_url(bad).is_err(), "should reject: {bad}");

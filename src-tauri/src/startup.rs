@@ -11,15 +11,15 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Shell::{
-    FOLDERID_Startup, IShellLinkW, ShellLink, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    FOLDERID_Startup, IShellLinkW, SHGetKnownFolderPath, ShellLink, KF_FLAG_DEFAULT,
 };
 
 /// Resolve the per-user startup folder (what `shell:startup` expands to).
 fn startup_dir() -> Result<PathBuf, String> {
     let pwstr = unsafe { SHGetKnownFolderPath(&FOLDERID_Startup, KF_FLAG_DEFAULT, None) }
         .map_err(|e| format!("Failed to locate shell:startup folder: {}", e))?;
-    let path = unsafe { pwstr.to_string() }
-        .map_err(|e| format!("Invalid shell:startup path: {}", e))?;
+    let path =
+        unsafe { pwstr.to_string() }.map_err(|e| format!("Invalid shell:startup path: {}", e))?;
     unsafe { CoTaskMemFree(Some(pwstr.as_ptr() as *const core::ffi::c_void)) };
     Ok(PathBuf::from(path))
 }

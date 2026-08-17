@@ -2,7 +2,7 @@ use crate::models::{AppConfig, Clip, ClipKind};
 use sha2::{Digest, Sha256};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    OpenClipboard, CloseClipboard, GetClipboardData, EmptyClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
@@ -74,11 +74,18 @@ pub fn capture_clipboard(config: &AppConfig) -> Result<Clip, CaptureError> {
     if locked {
         Err(CaptureError::Locked)
     } else {
-        Err(CaptureError::Skip("No supported clipboard format".to_string()))
+        Err(CaptureError::Skip(
+            "No supported clipboard format".to_string(),
+        ))
     }
 }
 
-fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, CaptureError> {
+fn try_capture_image(
+    config: &AppConfig,
+    source_exe: &str,
+    source_title: &str,
+    now: u64,
+) -> Result<Clip, CaptureError> {
     unsafe {
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
             return Err(CaptureError::Locked);
@@ -131,7 +138,11 @@ fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, n
             kind: ClipKind::Image,
             text_content: None,
             image_data: Some(dib_data),
-            thumbnail_base64: if thumbnail_base64.is_empty() { None } else { Some(thumbnail_base64) },
+            thumbnail_base64: if thumbnail_base64.is_empty() {
+                None
+            } else {
+                Some(thumbnail_base64)
+            },
             content_hash,
             preview: String::from("Image"),
             truncated: false,
@@ -145,7 +156,11 @@ fn try_capture_image(config: &AppConfig, source_exe: &str, source_title: &str, n
     }
 }
 
-fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Result<Clip, CaptureError> {
+fn try_capture_file_paths(
+    source_exe: &str,
+    source_title: &str,
+    now: u64,
+) -> Result<Clip, CaptureError> {
     use windows::Win32::UI::Shell::DROPFILES;
 
     unsafe {
@@ -196,11 +211,15 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
             let mut pp = pos as *const u16;
             while (pp as usize) + 2 <= end {
                 let c = *pp;
-                if c == 0 { break; }
+                if c == 0 {
+                    break;
+                }
                 chars.push(c);
                 pp = pp.add(1);
             }
-            if chars.is_empty() { break; }
+            if chars.is_empty() {
+                break;
+            }
             files.push(String::from_utf16_lossy(&chars));
             pos = pp as usize + 2; // skip this entry's NUL terminator
         }
@@ -209,14 +228,23 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
         let _ = CloseClipboard();
 
         let file_list = files.join(";");
-        let preview_names: Vec<String> = files.iter().take(3)
-            .map(|f| std::path::Path::new(f).file_name()
-                .unwrap_or_default().to_string_lossy().to_string())
+        let preview_names: Vec<String> = files
+            .iter()
+            .take(3)
+            .map(|f| {
+                std::path::Path::new(f)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            })
             .collect();
         let preview = preview_names.join(", ");
         let preview = if files.len() > 3 {
             format!("{}, +{} more", preview, files.len() - 3)
-        } else { preview };
+        } else {
+            preview
+        };
 
         let file_list_len = file_list.len() as u64;
 
@@ -245,7 +273,12 @@ fn try_capture_file_paths(source_exe: &str, source_title: &str, now: u64) -> Res
     }
 }
 
-fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, now: u64) -> Result<Clip, CaptureError> {
+fn try_capture_text(
+    config: &AppConfig,
+    source_exe: &str,
+    source_title: &str,
+    now: u64,
+) -> Result<Clip, CaptureError> {
     unsafe {
         if OpenClipboard(HWND(std::ptr::null_mut())).is_err() {
             return Err(CaptureError::Locked);
@@ -275,7 +308,9 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
         let mut p = ptr as *const u16;
         for _ in 0..max_units {
             let c = *p;
-            if c == 0 { break; }
+            if c == 0 {
+                break;
+            }
             chars.push(c);
             p = p.add(1);
         }
@@ -297,7 +332,11 @@ fn try_capture_text(config: &AppConfig, source_exe: &str, source_title: &str, no
 
         let preview_text: String = content.chars().take(200).collect();
         let preview = if truncated {
-            format!("{} [Truncated, original {} KB]", preview_text, original_size / 1024)
+            format!(
+                "{} [Truncated, original {} KB]",
+                preview_text,
+                original_size / 1024
+            )
         } else {
             preview_text
         };
@@ -329,8 +368,8 @@ fn decode_clipboard_image(dib_data: &[u8]) -> Result<image::DynamicImage, String
         .or_else(|_| {
             // Fallback for palette-based or unusually-headed DIBs: wrap with a
             // correct BMP file header and let the image crate decode it.
-            let bmp = wrap_dib_as_bmp(dib_data)
-                .ok_or_else(|| "unsupported DIB layout".to_string())?;
+            let bmp =
+                wrap_dib_as_bmp(dib_data).ok_or_else(|| "unsupported DIB layout".to_string())?;
             image::load_from_memory(&bmp).map_err(|e| format!("BMP decode: {}", e))
         })
 }
@@ -340,21 +379,21 @@ fn decode_clipboard_image(dib_data: &[u8]) -> Result<image::DynamicImage, String
 fn encode_dib_24bpp(img: &image::DynamicImage) -> Vec<u8> {
     let rgb = img.to_rgb8();
     let (w, h) = (rgb.width() as usize, rgb.height() as usize);
-    let stride = (w * 3 + 3) / 4 * 4;
+    let stride = (w * 3).div_ceil(4) * 4;
     let pixel_bytes = stride * h;
 
     let mut out = Vec::with_capacity(40 + pixel_bytes);
-    out.extend_from_slice(&40u32.to_le_bytes());                // biSize
-    out.extend_from_slice(&(w as i32).to_le_bytes());           // biWidth
-    out.extend_from_slice(&(h as i32).to_le_bytes());           // biHeight (bottom-up)
-    out.extend_from_slice(&1u16.to_le_bytes());                 // biPlanes
-    out.extend_from_slice(&24u16.to_le_bytes());                // biBitCount
-    out.extend_from_slice(&0u32.to_le_bytes());                 // biCompression = BI_RGB
+    out.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    out.extend_from_slice(&(w as i32).to_le_bytes()); // biWidth
+    out.extend_from_slice(&(h as i32).to_le_bytes()); // biHeight (bottom-up)
+    out.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    out.extend_from_slice(&24u16.to_le_bytes()); // biBitCount
+    out.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
     out.extend_from_slice(&(pixel_bytes as u32).to_le_bytes()); // biSizeImage
-    out.extend_from_slice(&2835i32.to_le_bytes());              // biXPelsPerMeter (~72 DPI)
-    out.extend_from_slice(&2835i32.to_le_bytes());              // biYPelsPerMeter
-    out.extend_from_slice(&0u32.to_le_bytes());                 // biClrUsed
-    out.extend_from_slice(&0u32.to_le_bytes());                 // biClrImportant
+    out.extend_from_slice(&2835i32.to_le_bytes()); // biXPelsPerMeter (~72 DPI)
+    out.extend_from_slice(&2835i32.to_le_bytes()); // biYPelsPerMeter
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
 
     let padding = [0u8; 3];
     let pad_len = stride - w * 3;
@@ -444,13 +483,17 @@ pub fn generate_preview_data_url(dib_data: &[u8]) -> Result<String, String> {
     let max_h = 480u32;
     // Fit within the box: min of the two axis ratios, never above 1.0 so a
     // smaller image is not blown up.
-    let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64).min(1.0);
+    let scale = (max_w as f64 / w as f64)
+        .min(max_h as f64 / h as f64)
+        .min(1.0);
     let nw = ((w as f64 * scale).round() as u32).max(1);
     let nh = ((h as f64 * scale).round() as u32).max(1);
     let rgb = if scale >= 1.0 {
         dyn_img.to_rgb8()
     } else {
-        dyn_img.resize(nw, nh, image::imageops::FilterType::Lanczos3).to_rgb8()
+        dyn_img
+            .resize(nw, nh, image::imageops::FilterType::Lanczos3)
+            .to_rgb8()
     };
 
     let mut buf = Vec::new();
@@ -536,7 +579,7 @@ fn decode_dib(dib: &[u8]) -> Result<image::RgbaImage, String> {
     };
 
     let bytes_per_px = bpp / 8;
-    let stride = (width * bpp + 31) / 32 * 4; // rows are DWORD-aligned
+    let stride = (width * bpp).div_ceil(32) * 4; // rows are DWORD-aligned
     let pixel_bytes = stride
         .checked_mul(height)
         .and_then(|n| pixel_start.checked_add(n))
@@ -610,7 +653,11 @@ fn wrap_dib_as_bmp(dib: &[u8]) -> Option<Vec<u8>> {
             }
         }
         if bpp <= 8 {
-            let colors = if clr_used > 0 { clr_used } else { 1usize << bpp };
+            let colors = if clr_used > 0 {
+                clr_used
+            } else {
+                1usize << bpp
+            };
             extra += colors * 4;
         }
     }
@@ -631,9 +678,7 @@ fn wrap_dib_as_bmp(dib: &[u8]) -> Option<Vec<u8>> {
 
 /// Foreground window handle as an integer (0 when none), for comparisons.
 pub fn foreground_hwnd() -> isize {
-    unsafe {
-        windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize
-    }
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize }
 }
 
 /// True when the foreground window is the desktop shell (Progman/WorkerW).
@@ -730,7 +775,10 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
     unsafe {
-        let wide: Vec<u16> = OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = OsStr::new(text)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         let bytes = wide.len() * 2;
         let hmem = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|_| "Alloc failed".to_string())?;
         let ptr = GlobalLock(hmem);
@@ -755,7 +803,8 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
 
 pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
     unsafe {
-        let hmem = GlobalAlloc(GMEM_MOVEABLE, data.len()).map_err(|_| "Alloc failed".to_string())?;
+        let hmem =
+            GlobalAlloc(GMEM_MOVEABLE, data.len()).map_err(|_| "Alloc failed".to_string())?;
         let ptr = GlobalLock(hmem);
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
         let _ = GlobalUnlock(hmem);
@@ -819,7 +868,10 @@ pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
 
         // Companion text: paths joined with \r\n (Windows text convention).
         let text = paths.join("\r\n");
-        let wide_text: Vec<u16> = OsStr::new(&text).encode_wide().chain(std::iter::once(0)).collect();
+        let wide_text: Vec<u16> = OsStr::new(&text)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         let htext = match GlobalAlloc(GMEM_MOVEABLE, wide_text.len() * 2) {
             Ok(h) => h,
             Err(_) => {
@@ -888,8 +940,8 @@ pub fn write_files_to_clipboard_from_text(text: &str) -> Result<String, String> 
 /// way, for a manual Ctrl+V.
 pub fn simulate_ctrl_v() -> Result<(), String> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-        KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+        KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
     };
 
     fn input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
@@ -899,7 +951,11 @@ pub fn simulate_ctrl_v() -> Result<(), String> {
                 ki: KEYBDINPUT {
                     wVk: vk,
                     wScan: 0,
-                    dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -913,31 +969,43 @@ pub fn simulate_ctrl_v() -> Result<(), String> {
             (held(VK_SHIFT.0), held(VK_MENU.0), held(VK_CONTROL.0));
 
         let mut seq = Vec::with_capacity(6);
-        if shift_held { seq.push(input(VK_SHIFT, true)); }
-        if alt_held { seq.push(input(VK_MENU, true)); }
+        if shift_held {
+            seq.push(input(VK_SHIFT, true));
+        }
+        if alt_held {
+            seq.push(input(VK_MENU, true));
+        }
         seq.push(input(VK_CONTROL, false));
         seq.push(input(VIRTUAL_KEY(0x56), false)); // V down
-        seq.push(input(VIRTUAL_KEY(0x56), true));  // V up
+        seq.push(input(VIRTUAL_KEY(0x56), true)); // V up
         seq.push(input(VK_CONTROL, true));
         let sent = SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
         if sent as usize != seq.len() {
-            return Err("Ctrl+V injection blocked (the target app may be running as administrator)".to_string());
+            return Err(
+                "Ctrl+V injection blocked (the target app may be running as administrator)"
+                    .to_string(),
+            );
         }
 
         // Restore modifiers the user is still physically holding so their
         // key state matches reality again. Best-effort: a failed restore
         // only means a stuck modifier until the user's next real keypress.
         let mut restore = Vec::new();
-        if shift_held && held(VK_SHIFT.0) { restore.push(input(VK_SHIFT, false)); }
-        if alt_held && held(VK_MENU.0) { restore.push(input(VK_MENU, false)); }
-        if ctrl_held && held(VK_CONTROL.0) { restore.push(input(VK_CONTROL, false)); }
+        if shift_held && held(VK_SHIFT.0) {
+            restore.push(input(VK_SHIFT, false));
+        }
+        if alt_held && held(VK_MENU.0) {
+            restore.push(input(VK_MENU, false));
+        }
+        if ctrl_held && held(VK_CONTROL.0) {
+            restore.push(input(VK_CONTROL, false));
+        }
         if !restore.is_empty() {
             SendInput(&restore, std::mem::size_of::<INPUT>() as i32);
         }
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1003,7 +1071,7 @@ mod dib_tests {
     #[test]
     fn decodes_a_top_down_32bpp_dib_with_opaque_alpha() {
         let mut dib = dib_header(2, -2, 32); // negative height = top-down
-        // Top row first: red, green (BGRX byte order, alpha byte zero).
+                                             // Top row first: red, green (BGRX byte order, alpha byte zero).
         dib.extend_from_slice(&[0, 0, 255, 0, 0, 255, 0, 0]);
         // Bottom row: blue, white.
         dib.extend_from_slice(&[255, 0, 0, 0, 255, 255, 255, 0]);
@@ -1034,7 +1102,7 @@ mod dib_tests {
         use image::GenericImageView;
 
         // 800x500 bottom-up 24bpp DIB (8:5 aspect), solid color so JPEG is tiny.
-        let stride = (800 * 3 + 3) / 4 * 4;
+        let stride = (800usize * 3).div_ceil(4) * 4;
         let mut dib = dib_header(800, 500, 24);
         let row = {
             let mut r = Vec::with_capacity(stride);
@@ -1052,7 +1120,9 @@ mod dib_tests {
         assert!(url.starts_with("data:image/jpeg;base64,"));
 
         let b64 = &url["data:image/jpeg;base64,".len()..];
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
         let img = image::load_from_memory(&bytes).unwrap();
         // 800:500 = 8:5 -> 720x450, aspect preserved, no crop, within bounds.
         assert_eq!(img.dimensions(), (720, 450));
@@ -1064,7 +1134,7 @@ mod dib_tests {
         use image::GenericImageView;
 
         // 100x100 stays 100x100: "fit within" shrinks but never enlarges.
-        let stride = (100 * 3 + 3) / 4 * 4;
+        let stride = (100usize * 3).div_ceil(4) * 4;
         let mut dib = dib_header(100, 100, 24);
         let row = vec![0u8; stride];
         for _ in 0..100 {
@@ -1073,7 +1143,9 @@ mod dib_tests {
 
         let url = super::generate_preview_data_url(&dib).unwrap();
         let b64 = &url["data:image/jpeg;base64,".len()..];
-        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
         let img = image::load_from_memory(&bytes).unwrap();
         assert_eq!(img.dimensions(), (100, 100));
     }
