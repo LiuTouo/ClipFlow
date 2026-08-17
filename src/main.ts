@@ -202,6 +202,85 @@ function updateFilterBar() {
   filterBar.setAttribute("aria-label", t("filterBarLabel"));
 }
 
+// === SVG icon helpers ===
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Create an SVG-namespaced element with the given attributes. */
+function svgEl(name: string, attrs: Record<string, string>): SVGElement {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const key in attrs) {
+    el.setAttribute(key, attrs[key]);
+  }
+  return el;
+}
+
+/** Decorative icon root: shared 24x24 viewBox, aria-hidden, focusable=false. */
+function iconRoot(size: number, fill: string, stroke: string): SVGElement {
+  const attrs: Record<string, string> = {
+    width: String(size),
+    height: String(size),
+    viewBox: "0 0 24 24",
+    fill,
+    stroke,
+    "aria-hidden": "true",
+    focusable: "false",
+  };
+  if (stroke !== "none") attrs["stroke-width"] = "2";
+  return svgEl("svg", attrs);
+}
+
+/** Generic copy glyph (rect + arrow) — reused by the text-clip icon and the Copy button. */
+function copyIcon(size: number): SVGElement {
+  const svg = iconRoot(size, "none", "currentColor");
+  svg.append(
+    svgEl("rect", { x: "9", y: "9", width: "13", height: "13", rx: "2" }),
+    svgEl("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }),
+  );
+  return svg;
+}
+
+/** FilePaths clip icon. */
+function fileIcon(): SVGElement {
+  const svg = iconRoot(16, "none", "currentColor");
+  svg.append(
+    svgEl("path", { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }),
+    svgEl("polyline", { points: "14 2 14 8 20 8" }),
+  );
+  return svg;
+}
+
+/** Link clip icon. */
+function linkIcon(): SVGElement {
+  const svg = iconRoot(16, "none", "currentColor");
+  svg.append(
+    svgEl("path", { d: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" }),
+    svgEl("path", { d: "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" }),
+  );
+  return svg;
+}
+
+/** Pin button icon; filled only while pinned. */
+function pinIcon(pinned: boolean): SVGElement {
+  const svg = iconRoot(15, pinned ? "currentColor" : "none", "currentColor");
+  svg.append(
+    svgEl("path", { d: "M12 2v8M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }),
+    svgEl("path", { d: "M4 6h16" }),
+    svgEl("path", { d: "M10 10v8a2 2 0 0 0 2 2 2 2 0 0 0 2-2v-8" }),
+  );
+  return svg;
+}
+
+/** More button icon (three dots). */
+function moreIcon(): SVGElement {
+  const svg = iconRoot(15, "currentColor", "none");
+  svg.append(
+    svgEl("circle", { cx: "5", cy: "12", r: "2" }),
+    svgEl("circle", { cx: "12", cy: "12", r: "2" }),
+    svgEl("circle", { cx: "19", cy: "12", r: "2" }),
+  );
+  return svg;
+}
+
 // === Render ===
 function render() {
   const query = searchInput.value.toLowerCase();
@@ -244,7 +323,7 @@ function render() {
     clearTimeout(previewHintTimer);
     previewHintTimer = null;
   }
-  clipList.innerHTML = "";
+  clipList.replaceChildren();
 
   const searching = query.length > 0;
   const filtering = activeFilter !== "all";
@@ -327,13 +406,13 @@ function render() {
       iconDiv.appendChild(img);
     } else if (clip.kind === "FilePaths") {
       iconDiv.className = "clip-icon text-icon";
-      iconDiv.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+      iconDiv.appendChild(fileIcon());
     } else if (isLink(clip.text_content)) {
       iconDiv.className = "clip-icon text-icon";
-      iconDiv.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
+      iconDiv.appendChild(linkIcon());
     } else {
       iconDiv.className = "clip-icon text-icon";
-      iconDiv.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+      iconDiv.appendChild(copyIcon(16));
     }
 
     el.appendChild(iconDiv);
@@ -387,7 +466,7 @@ function render() {
     // Pin
     const pinBtn = document.createElement("button");
     pinBtn.className = `clip-action-btn pin-btn${clip.pinned ? " pinned" : ""}`;
-    pinBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="${clip.pinned ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2"><path d="M12 2v8M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M4 6h16"/><path d="M10 10v8a2 2 0 0 0 2 2 2 2 0 0 0 2-2v-8"/></svg>`;
+    pinBtn.appendChild(pinIcon(clip.pinned));
     pinBtn.title = clip.pinned ? t("unpinTitle") : t("pinTitle");
     pinBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -398,7 +477,7 @@ function render() {
     // Copy
     const copyBtn = document.createElement("button");
     copyBtn.className = "clip-action-btn";
-    copyBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+    copyBtn.appendChild(copyIcon(15));
     copyBtn.title = t("copyOnlyTitle");
     copyBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -409,7 +488,7 @@ function render() {
     // More (opens menu with Delete)
     const moreBtn = document.createElement("button");
     moreBtn.className = "clip-action-btn more-btn";
-    moreBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>`;
+    moreBtn.appendChild(moreIcon());
     moreBtn.title = t("moreTitle");
     moreBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -695,7 +774,7 @@ function hoveredRowId(): string | null {
 function showToast(message: string, onUndo?: () => void) {
   if (toastTimer) clearTimeout(toastTimer);
 
-  toast.innerHTML = "";
+  toast.replaceChildren();
   const span = document.createElement("span");
   span.textContent = message;
   toast.appendChild(span);
