@@ -123,10 +123,9 @@ async function flushMove(): Promise<void> {
     );
     await overlayWindow.setPosition(new PhysicalPosition(Math.round(position.x), Math.round(position.y)));
     if (activeSessionId === point.sessionId && !visible) {
-      // Reassert the native topmost band whenever a new drag shows the reused
-      // overlay. A hidden, non-focusable window can otherwise return behind
-      // another application even though it was created as always-on-top.
-      await overlayWindow.setAlwaysOnTop(true);
+      // Z-order comes from the native owner chain (drag-overlay owned by the
+      // sidebar, itself owned by main) set at window creation — no reassert
+      // needed here.
       await overlayWindow.show();
       visible = true;
     }

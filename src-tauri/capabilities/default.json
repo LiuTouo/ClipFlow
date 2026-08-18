@@ -10,7 +10,6 @@
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-set-position",
-    "core:window:allow-set-always-on-top",
     "core:event:default",
     "core:event:allow-listen",
     "shell:default",

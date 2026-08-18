@@ -1468,7 +1468,7 @@ fn get_or_create_sidebar_window(app: &tauri::AppHandle) -> Result<tauri::Webview
         return Ok(w);
     }
 
-    let w = WebviewWindowBuilder::new(
+    let mut builder = WebviewWindowBuilder::new(
         app,
         "favorites-sidebar",
         WebviewUrl::App("favorites.html".into()),
@@ -1482,9 +1482,20 @@ fn get_or_create_sidebar_window(app: &tauri::AppHandle) -> Result<tauri::Webview
     .resizable(false)
     .inner_size(SIDEBAR_WINDOW_W as f64, SIDEBAR_WINDOW_H as f64)
     .visible(false)
-    .focused(false)
-    .build()
-    .map_err(|e| format!("sidebar window creation failed: {:?}", e))?;
+    .focused(false);
+    // Own the sidebar to main so Windows keeps it above the panel in Z-order.
+    #[cfg(windows)]
+    {
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        builder = builder
+            .owner(&main)
+            .map_err(|e| format!("sidebar owner setup failed: {:?}", e))?;
+    }
+    let w = builder
+        .build()
+        .map_err(|e| format!("sidebar window creation failed: {:?}", e))?;
     // Focus loss routes through the same composite re-check as main/preview.
     let app_handle = app.clone();
     w.on_window_event(move |event| {
@@ -1507,7 +1518,7 @@ fn get_or_create_drag_overlay_window(
         return Ok(w);
     }
 
-    let w = WebviewWindowBuilder::new(
+    let mut builder = WebviewWindowBuilder::new(
         app,
         "drag-overlay",
         WebviewUrl::App("drag-overlay.html".into()),
@@ -1522,9 +1533,22 @@ fn get_or_create_drag_overlay_window(
     .focusable(false)
     .inner_size(DRAG_OVERLAY_WINDOW_W as f64, DRAG_OVERLAY_WINDOW_H as f64)
     .visible(false)
-    .focused(false)
-    .build()
-    .map_err(|e| format!("drag overlay window creation failed: {:?}", e))?;
+    .focused(false);
+    // Own the overlay to the sidebar (itself owned by main) so Windows keeps
+    // the overlay above both host windows — always_on_top alone cannot
+    // re-elevate a window whose topmost flag is already set.
+    #[cfg(windows)]
+    {
+        let sidebar = app
+            .get_webview_window("favorites-sidebar")
+            .ok_or_else(|| "favorites sidebar window not found".to_string())?;
+        builder = builder
+            .owner(&sidebar)
+            .map_err(|e| format!("drag overlay owner setup failed: {:?}", e))?;
+    }
+    let w = builder
+        .build()
+        .map_err(|e| format!("drag overlay window creation failed: {:?}", e))?;
     w.set_ignore_cursor_events(true)
         .map_err(|e| format!("drag overlay cursor passthrough failed: {:?}", e))?;
     Ok(w)
