@@ -70,6 +70,279 @@ pub struct PreviewPayload {
     pub source_title: String,
 }
 
+/// Highest tutorial version shipped with this build. The tutorial window
+/// auto-opens once when a config's `tutorial_version` is below this value.
+pub const CURRENT_TUTORIAL_VERSION: u32 = 1;
+
+/// A durable favorite snapshot of one clipboard item. Mirrors `Clip` minus the
+/// history-only `pinned` flag. The `id` is the item's `content_hash` (a stable
+/// key across runs), so the same content shares one snapshot no matter how many
+/// collections reference it. Raw image bytes are stored — never serialized over
+/// IPC — so a favorite stays pasteable/copyable/previewable after its history
+/// entry is deleted or evicted.
+#[derive(Debug, Clone, Serialize)]
+pub struct FavoriteItem {
+    pub id: String,
+    pub kind: ClipKind,
+    pub text_content: Option<String>,
+    #[serde(skip_serializing)]
+    pub image_data: Option<Vec<u8>>,
+    pub thumbnail_base64: Option<String>,
+    pub content_hash: String,
+    pub preview: String,
+    pub truncated: bool,
+    pub source_exe: String,
+    pub source_title: String,
+    pub source_icon: Option<String>,
+    pub captured_at: u64,
+    pub byte_size: u64,
+    /// Membership timestamp (ms) when listed inside a collection; `None` when
+    /// fetched outside one (see `list_favorite_items` vs `get_item`).
+    pub added_at: Option<u64>,
+}
+
+impl FavoriteItem {
+    /// Rebuild the `Clip` this snapshot came from, for reuse by the existing
+    /// preview/paste/copy paths (a favorite is pasted exactly like a Clip).
+    pub fn into_clip(self) -> Clip {
+        Clip {
+            id: self.id,
+            kind: self.kind,
+            text_content: self.text_content,
+            image_data: self.image_data,
+            thumbnail_base64: self.thumbnail_base64,
+            content_hash: self.content_hash,
+            preview: self.preview,
+            truncated: self.truncated,
+            source_exe: self.source_exe,
+            source_title: self.source_title,
+            source_icon: self.source_icon,
+            captured_at: self.captured_at,
+            pinned: false,
+            byte_size: self.byte_size,
+        }
+    }
+}
+
+impl From<Clip> for FavoriteItem {
+    fn from(clip: Clip) -> Self {
+        FavoriteItem {
+            // A favorite is keyed by content hash (stable across runs), so the
+            // item id IS the content hash — never the session-scoped Clip id.
+            id: clip.content_hash.clone(),
+            kind: clip.kind,
+            text_content: clip.text_content,
+            image_data: clip.image_data,
+            thumbnail_base64: clip.thumbnail_base64,
+            content_hash: clip.content_hash,
+            preview: clip.preview,
+            truncated: clip.truncated,
+            source_exe: clip.source_exe,
+            source_title: clip.source_title,
+            source_icon: clip.source_icon,
+            captured_at: clip.captured_at,
+            byte_size: clip.byte_size,
+            added_at: None,
+        }
+    }
+}
+
+/// A favorites collection as shown in the sidebar.
+#[derive(Debug, Clone, Serialize)]
+pub struct CollectionSummary {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub created_at: u64,
+    pub item_count: u64,
+}
+
+/// Identifies a clip by scope for cross-referencing ("favorite this history
+/// item" / "copy this favorite into another collection").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipLocator {
+    pub scope: ClipScope,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClipScope {
+    History,
+    Favorite,
+}
+
+/// Keyboard chord (key codes) that opens the favorites sidebar. Stored in
+/// config; the frontend matches `KeyboardEvent.code` values, so the backend
+/// only validates it — no global OS shortcut is registered for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelShortcut {
+    pub codes: Vec<String>,
+}
+
+impl Default for PanelShortcut {
+    fn default() -> Self {
+        PanelShortcut {
+            codes: vec!["AltLeft".to_string()],
+        }
+    }
+}
+
+/// True for the sided modifier key codes (the only modifier codes accepted).
+fn is_modifier(code: &str) -> bool {
+    matches!(
+        code,
+        "ControlLeft"
+            | "ControlRight"
+            | "AltLeft"
+            | "AltRight"
+            | "ShiftLeft"
+            | "ShiftRight"
+            | "MetaLeft"
+            | "MetaRight"
+    )
+}
+
+/// True for function-key codes F1..F12.
+fn is_function(code: &str) -> bool {
+    matches!(
+        code,
+        "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12"
+    )
+}
+
+/// True for the printable physical codes KeyA..KeyZ and Digit0..Digit9.
+fn is_printable(code: &str) -> bool {
+    if let Some(key) = code.strip_prefix("Key") {
+        return key.len() == 1 && key.as_bytes()[0].is_ascii_uppercase();
+    }
+    if let Some(digit) = code.strip_prefix("Digit") {
+        return digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit();
+    }
+    false
+}
+
+/// Physical codes reserved by the panel/sidebar interaction surface.
+fn is_reserved(code: &str) -> bool {
+    matches!(
+        code,
+        "Escape"
+            | "Enter"
+            | "Space"
+            | "Tab"
+            | "ArrowUp"
+            | "ArrowDown"
+            | "ArrowLeft"
+            | "ArrowRight"
+            | "Slash"
+    )
+}
+
+/// Map a physical code to its global-hotkey form (KeyA→A, Digit0→0, F5→F5).
+fn global_key(code: &str) -> &str {
+    if let Some(k) = code.strip_prefix("Key") {
+        return k;
+    }
+    if let Some(d) = code.strip_prefix("Digit") {
+        return d;
+    }
+    code
+}
+
+/// Canonical, order-insensitive parts of a chord: sided modifiers folded to
+/// their global names, then the (non-modifier) keys, each list sorted.
+fn chord_parts(codes: &[String]) -> Vec<String> {
+    let mut mods: Vec<&str> = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
+    for code in codes {
+        match code.as_str() {
+            "ControlLeft" | "ControlRight" => mods.push("Ctrl"),
+            "AltLeft" | "AltRight" => mods.push("Alt"),
+            "ShiftLeft" | "ShiftRight" => mods.push("Shift"),
+            "MetaLeft" | "MetaRight" => mods.push("Super"),
+            other => keys.push(global_key(other).to_string()),
+        }
+    }
+    mods.sort_unstable();
+    keys.sort();
+    let mut parts: Vec<String> = mods.into_iter().map(String::from).collect();
+    parts.extend(keys);
+    parts
+}
+
+/// Canonical parts of a global hotkey string (e.g. "Ctrl+Shift+V").
+fn hotkey_parts(hotkey: &str) -> Vec<String> {
+    let mut mods: Vec<String> = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
+    for part in hotkey.split('+') {
+        match part {
+            "Ctrl" | "Shift" | "Alt" | "Super" => mods.push(part.to_string()),
+            other => keys.push(other.to_string()),
+        }
+    }
+    mods.sort();
+    keys.sort();
+    let mut parts = mods;
+    parts.extend(keys);
+    parts
+}
+
+impl PanelShortcut {
+    /// Reject malformed chords and keys reserved by the panel/sidebar
+    /// interaction surface. Operates on physical `KeyboardEvent.code` values:
+    /// unique recognized codes; a bare (modifier-less) chord is only a single
+    /// modifier or a single F-key; printable letters/digits need a modifier.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.codes.is_empty() {
+            return Err("Drawer shortcut must include at least one key".to_string());
+        }
+        if self.codes.len() > 8 {
+            return Err("Drawer shortcut has too many keys".to_string());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for code in &self.codes {
+            if !seen.insert(code.as_str()) {
+                return Err(format!("Drawer shortcut repeats key '{}'", code));
+            }
+        }
+        for code in &self.codes {
+            if is_reserved(code) {
+                return Err(format!("Drawer shortcut key '{}' is reserved", code));
+            }
+        }
+        for code in &self.codes {
+            if !(is_modifier(code) || is_function(code) || is_printable(code)) {
+                return Err(format!("Drawer shortcut key '{}' is not recognized", code));
+            }
+        }
+        // No modifier present: only a single function key is a valid bare chord.
+        if !self.codes.iter().any(|c| is_modifier(c))
+            && !(self.codes.len() == 1 && is_function(&self.codes[0]))
+        {
+            return Err(
+                "Drawer shortcut needs a modifier (Ctrl/Alt/Shift/Meta) or a function key (F1-F12)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// True when this chord is semantically the same gesture as the configured
+    /// global panel hotkey (sided modifiers folded to their global names).
+    pub fn equivalent_to_hotkey(&self, hotkey: &str) -> bool {
+        chord_parts(&self.codes) == hotkey_parts(hotkey)
+    }
+}
+
+/// Session-only runtime state of the favorites sidebar: whether it is open and
+/// which collection (if any) is selected. Never persisted.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FavoritesUiState {
+    pub open: bool,
+    pub selected_collection: Option<String>,
+}
+
 impl Clip {
     /// Generate a new unique ID based on content hash and timestamp.
     pub fn new_id(content_hash: &str, captured_at: u64) -> String {
@@ -136,6 +409,12 @@ pub struct AppConfig {
     /// hide/show. When false (default), it resets to "All" each time the
     /// Panel opens. This does NOT persist the selected filter itself.
     pub remember_history_filter: bool,
+    /// Key chord that opens the favorites sidebar (key codes). Backend-validated
+    /// only — the frontend matches `KeyboardEvent.code` values.
+    pub favorites_toggle_shortcut: PanelShortcut,
+    /// Last tutorial version the user has seen. The backend auto-opens the
+    /// tutorial once when this is below CURRENT_TUTORIAL_VERSION.
+    pub tutorial_version: u32,
 }
 
 impl Default for AppConfig {
@@ -164,6 +443,8 @@ impl Default for AppConfig {
             paste_files_as_files: true,
             auto_update: true,
             remember_history_filter: false,
+            favorites_toggle_shortcut: PanelShortcut::default(),
+            tutorial_version: 0,
         }
     }
 }
@@ -272,7 +553,7 @@ fn config_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod backward_compat_tests {
-    use super::AppConfig;
+    use super::{AppConfig, PanelShortcut};
 
     #[test]
     fn old_json_without_remember_history_filter_defaults_false() {
@@ -318,6 +599,157 @@ mod backward_compat_tests {
         let json = serde_json::to_string(&cfg).expect("serialize");
         let round: AppConfig = serde_json::from_str(&json).expect("deserialize");
         assert!(!round.remember_history_filter);
+    }
+
+    #[test]
+    fn old_json_without_favorites_fields_defaults_safely() {
+        // Pre-favorites config files have neither favorites_toggle_shortcut nor
+        // tutorial_version — both must fall back to sane defaults via serde(default).
+        let json = r#"{
+            "hotkey": "Ctrl+Shift+V",
+            "language": "en"
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).expect("deserialize old config");
+        assert_eq!(
+            cfg.favorites_toggle_shortcut.codes,
+            vec!["AltLeft".to_string()]
+        );
+        assert_eq!(cfg.tutorial_version, 0);
+    }
+
+    #[test]
+    fn favorites_shortcut_and_tutorial_version_round_trip() {
+        let cfg = AppConfig {
+            favorites_toggle_shortcut: PanelShortcut {
+                codes: vec!["ControlLeft".to_string(), "KeyB".to_string()],
+            },
+            tutorial_version: 1,
+            ..AppConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let round: AppConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            round.favorites_toggle_shortcut.codes,
+            vec!["ControlLeft".to_string(), "KeyB".to_string()]
+        );
+        assert_eq!(round.tutorial_version, 1);
+    }
+}
+
+#[cfg(test)]
+mod favorites_shortcut_tests {
+    use super::PanelShortcut;
+
+    fn chord(codes: &[&str]) -> PanelShortcut {
+        PanelShortcut {
+            codes: codes.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn default_chord_is_alt_left() {
+        assert_eq!(PanelShortcut::default().codes, vec!["AltLeft".to_string()]);
+        assert!(PanelShortcut::default().validate().is_ok());
+    }
+
+    #[test]
+    fn empty_codes_are_rejected() {
+        assert!(chord(&[]).validate().is_err());
+    }
+
+    #[test]
+    fn reserved_physical_codes_are_rejected() {
+        for key in [
+            "Escape",
+            "Enter",
+            "Space",
+            "Tab",
+            "ArrowUp",
+            "ArrowDown",
+            "ArrowLeft",
+            "ArrowRight",
+            "Slash",
+        ] {
+            assert!(
+                chord(&[key]).validate().is_err(),
+                "{key} should be reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_codes_are_rejected() {
+        assert!(chord(&["ControlLeft", "ControlLeft"]).validate().is_err());
+    }
+
+    #[test]
+    fn unrecognized_codes_are_rejected() {
+        for key in [
+            "j",
+            "/",
+            "F",
+            "Key",
+            "Digit",
+            "Control",
+            "Backspace",
+            "KeyA ",
+        ] {
+            assert!(
+                chord(&[key]).validate().is_err(),
+                "{key} should be unrecognized"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_modifier_and_function_keys_are_allowed() {
+        assert!(chord(&["ControlLeft"]).validate().is_ok());
+        assert!(chord(&["ShiftRight"]).validate().is_ok());
+        assert!(chord(&["F5"]).validate().is_ok());
+        assert!(chord(&["F12"]).validate().is_ok());
+    }
+
+    #[test]
+    fn bare_printable_codes_need_a_modifier() {
+        assert!(chord(&["KeyA"]).validate().is_err());
+        assert!(chord(&["Digit3"]).validate().is_err());
+    }
+
+    #[test]
+    fn printable_with_modifier_is_allowed() {
+        assert!(chord(&["ControlLeft", "KeyA"]).validate().is_ok());
+        assert!(chord(&["ShiftLeft", "Digit0"]).validate().is_ok());
+        assert!(chord(&["ControlLeft", "ShiftLeft", "KeyV"])
+            .validate()
+            .is_ok());
+    }
+
+    #[test]
+    fn empty_code_string_is_rejected() {
+        assert!(chord(&["  "]).validate().is_err());
+    }
+
+    #[test]
+    fn too_many_codes_are_rejected() {
+        let codes: Vec<String> = "ABCDEFGHI".chars().map(|c| format!("Key{c}")).collect();
+        let refs: Vec<&str> = codes.iter().map(|s| s.as_str()).collect();
+        assert!(chord(&refs).validate().is_err());
+    }
+
+    #[test]
+    fn chord_equivalent_to_global_hotkey_is_detected() {
+        assert!(chord(&["ControlLeft", "ShiftLeft", "KeyV"]).equivalent_to_hotkey("Ctrl+Shift+V"));
+        assert!(chord(&["ControlLeft", "KeyV"]).equivalent_to_hotkey("Ctrl+V"));
+        // Sided modifiers fold to their global name.
+        assert!(chord(&["ControlRight", "MetaLeft", "KeyB"]).equivalent_to_hotkey("Super+Ctrl+B"));
+    }
+
+    #[test]
+    fn chord_not_equivalent_to_hotkey() {
+        assert!(!chord(&["ControlLeft"]).equivalent_to_hotkey("Ctrl+Shift+V"));
+        assert!(!chord(&["ControlLeft", "KeyV"]).equivalent_to_hotkey("Ctrl+Shift+V"));
+        assert!(!chord(&["ControlLeft", "KeyC"]).equivalent_to_hotkey("Ctrl+V"));
+        assert!(!chord(&["F5"]).equivalent_to_hotkey("Ctrl+Shift+V"));
     }
 }
 

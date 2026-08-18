@@ -1,4 +1,5 @@
 mod clipboard;
+mod favorites;
 mod history;
 mod migration;
 mod models;
@@ -6,8 +7,12 @@ mod persistence;
 mod startup;
 mod update;
 
+use favorites::FavoritesStore;
 use history::HistoryStore;
-use models::{AppConfig, Clip, ClipKind, ClipboardUpdate, PreviewPayload};
+use models::{
+    AppConfig, Clip, ClipKind, ClipLocator, ClipScope, ClipboardUpdate, CollectionSummary,
+    FavoriteItem, FavoritesUiState, PanelShortcut, PreviewPayload, CURRENT_TUTORIAL_VERSION,
+};
 use persistence::Persistence;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,6 +44,10 @@ struct AppState {
     /// Monotonic preview-generation token. Every show and hide intent bumps it;
     /// a show may display only while its claimed generation is still the newest.
     preview_generation: Arc<AtomicU64>,
+    /// Durable favorites collections. Independent of history persistence.
+    favorites: Arc<Mutex<Option<FavoritesStore>>>,
+    /// Session-only sidebar UI state (open + selected collection).
+    favorites_ui: Arc<Mutex<FavoritesUiState>>,
 }
 
 /// Handles to the tray menu items, kept so their labels can be re-localized
@@ -46,6 +55,7 @@ struct AppState {
 struct TrayMenuItems {
     pause: tauri::menu::MenuItem<tauri::Wry>,
     settings: tauri::menu::MenuItem<tauri::Wry>,
+    tutorial: tauri::menu::MenuItem<tauri::Wry>,
     about: tauri::menu::MenuItem<tauri::Wry>,
     quit: tauri::menu::MenuItem<tauri::Wry>,
 }
@@ -54,6 +64,7 @@ struct TrayLabels {
     pause: &'static str,
     resume: &'static str,
     settings: &'static str,
+    tutorial: &'static str,
     about: &'static str,
     quit: &'static str,
 }
@@ -64,6 +75,7 @@ fn tray_labels(lang: &str) -> TrayLabels {
             pause: "Pause Monitoring",
             resume: "Resume Monitoring",
             settings: "Settings",
+            tutorial: "Tutorial",
             about: "About",
             quit: "Quit",
         },
@@ -71,6 +83,7 @@ fn tray_labels(lang: &str) -> TrayLabels {
             pause: "暫停監聽",
             resume: "繼續監聽",
             settings: "設定",
+            tutorial: "教學",
             about: "關於",
             quit: "結束",
         },
@@ -182,7 +195,7 @@ fn rollback_hotkey_swap(app: &tauri::AppHandle, new_hotkey: &str, old_hotkey: &s
 
 /// Current wall-clock time in milliseconds since the Unix epoch (the same unit
 /// as `Clip::captured_at` and the persistence cleanup clock).
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -218,6 +231,14 @@ fn update_config(
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
     let new_config = new_config.sanitized();
+    // Reject a malformed or reserved favorites chord before any side effect.
+    new_config.favorites_toggle_shortcut.validate()?;
+    if new_config
+        .favorites_toggle_shortcut
+        .equivalent_to_hotkey(&new_config.hotkey)
+    {
+        return Err("Drawer shortcut conflicts with the panel hotkey".to_string());
+    }
     let (old_hotkey, old_startup, old_persist, old_language, old_auto_update) = {
         let config = lock(&state.config);
         (
@@ -314,6 +335,7 @@ fn update_config(
                 .pause
                 .set_text(if running { labels.pause } else { labels.resume });
             let _ = items.settings.set_text(labels.settings);
+            let _ = items.tutorial.set_text(labels.tutorial);
             let _ = items.about.set_text(labels.about);
             let _ = items.quit.set_text(labels.quit);
         }
@@ -414,6 +436,282 @@ async fn paste_files(app: tauri::AppHandle, text: String) -> Result<String, Stri
 #[tauri::command]
 fn copy_only_files(text: String) -> Result<String, String> {
     clipboard::write_files_to_clipboard_from_text(&text)
+}
+
+// === Favorites ===
+
+/// Run `f` against the live favorites store, or fail when it failed to open.
+fn with_favorites<T>(
+    state: &AppState,
+    f: impl FnOnce(&mut FavoritesStore) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = lock(&state.favorites);
+    let store = guard
+        .as_mut()
+        .ok_or_else(|| "Favorites unavailable".to_string())?;
+    f(store)
+}
+
+/// Resolve a `ClipLocator` to a `FavoriteItem` snapshot (from history or from
+/// another favorite), for "add to a collection" / cross-collection copy.
+fn resolve_favorite_item(state: &AppState, locator: &ClipLocator) -> Result<FavoriteItem, String> {
+    match locator.scope {
+        ClipScope::History => {
+            let clip = lock(&state.history)
+                .get_clip(&locator.id)
+                .ok_or_else(|| "Clip not found".to_string())?;
+            Ok(FavoriteItem::from(clip))
+        }
+        ClipScope::Favorite => {
+            let guard = lock(&state.favorites);
+            let store = guard
+                .as_ref()
+                .ok_or_else(|| "Favorites unavailable".to_string())?;
+            store
+                .get_item(&locator.id)?
+                .ok_or_else(|| "Favorite item not found".to_string())
+        }
+    }
+}
+
+/// Resolve a locator to its content hash (a favorite's id IS its content hash).
+fn resolve_content_hash(state: &AppState, locator: &ClipLocator) -> Result<String, String> {
+    match locator.scope {
+        ClipScope::History => lock(&state.history)
+            .get_clip(&locator.id)
+            .map(|c| c.content_hash)
+            .ok_or_else(|| "Clip not found".to_string()),
+        ClipScope::Favorite => Ok(locator.id.clone()),
+    }
+}
+
+/// A favorite's stored snapshot as a full `Clip` (image bytes included), for
+/// reuse by the preview/paste/copy paths.
+fn favorite_as_clip(state: &AppState, id: &str) -> Result<Clip, String> {
+    let guard = lock(&state.favorites);
+    let store = guard
+        .as_ref()
+        .ok_or_else(|| "Favorites unavailable".to_string())?;
+    let item = store
+        .get_item(id)?
+        .ok_or_else(|| "Favorite item not found".to_string())?;
+    Ok(item.into_clip())
+}
+
+#[tauri::command]
+fn list_collections(state: tauri::State<AppState>) -> Result<Vec<CollectionSummary>, String> {
+    with_favorites(&state, |f| f.list_collections())
+}
+
+#[tauri::command]
+fn create_collection(
+    name: String,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<CollectionSummary, String> {
+    let summary = with_favorites(&state, |f| f.create_collection(&name))?;
+    let _ = app.emit("favorites-updated", ());
+    Ok(summary)
+}
+
+#[tauri::command]
+fn rename_collection(
+    id: String,
+    name: String,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<CollectionSummary, String> {
+    let summary = with_favorites(&state, |f| f.rename_collection(&id, &name))?;
+    let _ = app.emit("favorites-updated", ());
+    Ok(summary)
+}
+
+#[tauri::command]
+fn delete_collection(
+    id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    with_favorites(&state, |f| f.delete_collection(&id))?;
+    // Deleting the selected collection returns main to history; sidebar stays open.
+    clear_selection_if_deleted(&mut lock(&state.favorites_ui), &id);
+    let _ = app.emit("favorites-updated", ());
+    let ui_state = lock(&state.favorites_ui).clone();
+    let _ = app.emit("favorites-ui-state-changed", &ui_state);
+    Ok(())
+}
+
+#[tauri::command]
+fn reorder_collections(
+    ids: Vec<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    with_favorites(&state, |f| f.reorder_collections(&ids))?;
+    let _ = app.emit("favorites-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn add_favorite(
+    collection_id: String,
+    locator: ClipLocator,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let item = resolve_favorite_item(&state, &locator)?;
+    with_favorites(&state, |f| f.add_favorite(&collection_id, &item))?;
+    let _ = app.emit("favorites-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_favorite(
+    collection_id: String,
+    item_id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    with_favorites(&state, |f| f.remove_favorite(&collection_id, &item_id))?;
+    let _ = app.emit("favorites-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn list_favorite_items(
+    collection_id: String,
+    state: tauri::State<AppState>,
+) -> Result<Vec<FavoriteItem>, String> {
+    with_favorites(&state, |f| f.list_items(&collection_id))
+}
+
+/// Which collections reference this clip (empty when not favorited). Lets the
+/// history panel show a favorite state for a history item after its history
+/// entry was deleted and re-added, or cross-reference a favorite.
+#[tauri::command]
+fn favorite_collection_ids(
+    locator: ClipLocator,
+    state: tauri::State<AppState>,
+) -> Result<Vec<String>, String> {
+    let hash = resolve_content_hash(&state, &locator)?;
+    with_favorites(&state, |f| f.collection_ids_for_item(&hash))
+}
+
+/// Outcome string mirrors the history `paste_files` contract: `""` for a plain
+/// text/image paste (or files-as-text), `"files"` for a real CF_HDROP paste,
+/// `"text"` when the source files are gone and the path text was pasted instead.
+#[tauri::command]
+async fn paste_favorite(
+    app: tauri::AppHandle,
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let clip = favorite_as_clip(&state, &id)?;
+    let outcome = match clip.kind {
+        ClipKind::Text => {
+            clipboard::write_text_to_clipboard(clip.text_content.as_deref().unwrap_or(""))?;
+            String::new()
+        }
+        ClipKind::Image => {
+            let data = clip.image_data.as_deref().ok_or("Image data missing")?;
+            clipboard::write_image_to_clipboard(data)?;
+            String::new()
+        }
+        ClipKind::FilePaths => {
+            let text = clip.text_content.as_deref().unwrap_or("");
+            if lock(&state.config).paste_files_as_files {
+                clipboard::write_files_to_clipboard_from_text(text)?
+            } else {
+                clipboard::write_text_to_clipboard(text)?;
+                String::new()
+            }
+        }
+    };
+    hide_and_paste(&app).await;
+    Ok(outcome)
+}
+
+#[tauri::command]
+fn copy_favorite(id: String, state: tauri::State<AppState>) -> Result<String, String> {
+    let clip = favorite_as_clip(&state, &id)?;
+    match clip.kind {
+        ClipKind::Text => {
+            clipboard::write_text_to_clipboard(clip.text_content.as_deref().unwrap_or(""))?;
+            Ok(String::new())
+        }
+        ClipKind::Image => {
+            let data = clip.image_data.as_deref().ok_or("Image data missing")?;
+            clipboard::write_image_to_clipboard(data)?;
+            Ok(String::new())
+        }
+        ClipKind::FilePaths => {
+            let text = clip.text_content.as_deref().unwrap_or("");
+            if lock(&state.config).paste_files_as_files {
+                clipboard::write_files_to_clipboard_from_text(text)
+            } else {
+                clipboard::write_text_to_clipboard(text)?;
+                Ok(String::new())
+            }
+        }
+    }
+}
+
+#[tauri::command]
+async fn show_favorite_preview(
+    id: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let generation = state.preview_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let clip = favorite_as_clip(&state, &id)?;
+    let payload = build_preview_payload(clip)?;
+    commit_preview_on_main_thread(&app, generation, payload).await
+}
+
+// === Favorites UI state (session-only) ===
+
+#[tauri::command]
+fn get_favorites_ui_state(state: tauri::State<AppState>) -> FavoritesUiState {
+    lock(&state.favorites_ui).clone()
+}
+
+/// Open/close the sidebar. Closing clears the selection (returns to history);
+/// opening shows the sidebar window when the panel is visible.
+#[tauri::command]
+async fn set_favorites_open(
+    open: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    apply_sidebar_toggle(&mut lock(&state.favorites_ui), open);
+    let ui_state = lock(&state.favorites_ui).clone();
+    let _ = app.emit("favorites-ui-state-changed", &ui_state);
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let state = handle.state::<AppState>();
+        apply_sidebar_visibility(&handle, &state);
+    })
+    .map_err(|e| format!("run_on_main_thread failed: {:?}", e))?;
+    Ok(())
+}
+
+/// Select a collection (or `None` for history). Never changes `open`.
+#[tauri::command]
+fn set_favorites_selected(
+    collection_id: Option<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    // Reject an unknown collection id before mutating state.
+    if let Some(id) = &collection_id {
+        if !with_favorites(&state, |f| f.collection_exists(id))? {
+            return Err("Collection not found".to_string());
+        }
+    }
+    lock(&state.favorites_ui).selected_collection = collection_id;
+    let ui_state = lock(&state.favorites_ui).clone();
+    let _ = app.emit("favorites-ui-state-changed", &ui_state);
+    Ok(())
 }
 
 /// Build the serializable preview payload for one Clip. For Image entries the
@@ -913,6 +1211,7 @@ fn show_panel(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
         restore_preview_if_saved(app);
+        restore_sidebar_if_open(app);
     } else {
         log("[Mnemark] creating new panel window");
         match WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -974,6 +1273,7 @@ fn show_panel(app: &tauri::AppHandle) {
                 let _ = w.show();
                 let _ = w.set_focus();
                 restore_preview_if_saved(app);
+                restore_sidebar_if_open(app);
             }
             Err(e) => {
                 log(&format!("[Mnemark] panel creation failed: {:?}", e));
@@ -993,6 +1293,15 @@ fn hide_panel(app: &tauri::AppHandle) {
     // preview) and do NOT bump the generation (the still-desired show intent
     // remains current, so an in-flight show commits its payload on schedule).
     if let Some(window) = app.get_webview_window("clip-preview") {
+        let _ = window.hide();
+    }
+    // The favorites sidebar is attached too: hiding the panel hides it WITHOUT
+    // clearing its session state (show_panel restores it when still open).
+    if let Some(window) = app.get_webview_window("favorites-sidebar") {
+        let _ = window.hide();
+    }
+    // The drag overlay is purely transient and must never outlive the panel.
+    if let Some(window) = app.get_webview_window("drag-overlay") {
         let _ = window.hide();
     }
 }
@@ -1045,7 +1354,7 @@ fn schedule_focus_group_check(app: &tauri::AppHandle) {
                     .and_then(|w| w.is_focused().ok())
                     .unwrap_or(false)
             };
-            if !focused("main") && !focused("clip-preview") {
+            if !focused("main") && !focused("clip-preview") && !focused("favorites-sidebar") {
                 hide_panel(&handle);
             }
         }) {
@@ -1123,6 +1432,223 @@ fn position_preview(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Re
     Ok(())
 }
 
+/// Preferred logical size of the favorites sidebar window. Height matches the
+/// visual panel (540); width is clamped to the left-side space.
+const SIDEBAR_WINDOW_W: u32 = 360;
+const SIDEBAR_WINDOW_H: u32 = 540;
+const DRAG_OVERLAY_WINDOW_W: u32 = 288;
+const DRAG_OVERLAY_WINDOW_H: u32 = 112;
+
+/// Pure UI-state transitions (session-only), kept free of window/DB effects so
+/// the selection / return-to-history rules are unit-testable.
+fn apply_sidebar_toggle(ui: &mut FavoritesUiState, open: bool) {
+    ui.open = open;
+    // Closing the sidebar clears the selection and returns main to history.
+    if !open {
+        ui.selected_collection = None;
+    }
+}
+
+fn clear_selection_if_deleted(ui: &mut FavoritesUiState, deleted_id: &str) {
+    if ui.selected_collection.as_deref() == Some(deleted_id) {
+        ui.selected_collection = None;
+    }
+}
+
+fn tutorial_needed(version: u32) -> bool {
+    version < CURRENT_TUTORIAL_VERSION
+}
+
+/// Lazily create (or reuse) the attached favorites-sidebar window. Created
+/// hidden and unfocused so it never steals focus until explicitly opened.
+fn get_or_create_sidebar_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    if let Some(w) = app.get_webview_window("favorites-sidebar") {
+        return Ok(w);
+    }
+
+    let w = WebviewWindowBuilder::new(
+        app,
+        "favorites-sidebar",
+        WebviewUrl::App("favorites.html".into()),
+    )
+    .title("Mnemark Drawer")
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .inner_size(SIDEBAR_WINDOW_W as f64, SIDEBAR_WINDOW_H as f64)
+    .visible(false)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("sidebar window creation failed: {:?}", e))?;
+    // Focus loss routes through the same composite re-check as main/preview.
+    let app_handle = app.clone();
+    w.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(false) = event {
+            schedule_focus_group_check(&app_handle);
+        }
+    });
+    Ok(w)
+}
+
+/// Lazily create the single drag-card overlay alongside the drawer. Its WebView
+/// owns the visual and moves its native window from physical pointer events, so
+/// neither the main nor sidebar window can clip the card.
+fn get_or_create_drag_overlay_window(
+    app: &tauri::AppHandle,
+) -> Result<tauri::WebviewWindow, String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    if let Some(w) = app.get_webview_window("drag-overlay") {
+        return Ok(w);
+    }
+
+    let w = WebviewWindowBuilder::new(
+        app,
+        "drag-overlay",
+        WebviewUrl::App("drag-overlay.html".into()),
+    )
+    .title("Mnemark Drag Overlay")
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .focusable(false)
+    .inner_size(DRAG_OVERLAY_WINDOW_W as f64, DRAG_OVERLAY_WINDOW_H as f64)
+    .visible(false)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("drag overlay window creation failed: {:?}", e))?;
+    w.set_ignore_cursor_events(true)
+        .map_err(|e| format!("drag overlay cursor passthrough failed: {:?}", e))?;
+    Ok(w)
+}
+
+/// Pure left-side placement math: the sidebar sits immediately left of the
+/// visual panel, top-aligned, clamped into the monitor work area.
+#[allow(clippy::too_many_arguments)]
+fn place_sidebar(
+    main_pos: (i32, i32),
+    scale: f64,
+    work_area: (i32, i32, u32, u32),
+    panel_offset: i32,
+    gap: i32,
+    content_width: u32,
+    content_height: u32,
+) -> PreviewPlacement {
+    let to_phys = |v: i32| -> i32 { ((v as f64) * scale).round() as i32 };
+
+    let (mx, my) = main_pos;
+    let (wx, wy, _ww, wh) = work_area;
+    let work_bottom = wy + wh as i32;
+
+    let panel_left = mx + to_phys(panel_offset);
+    let panel_top = my + to_phys(panel_offset);
+
+    let pref_w = to_phys(content_width as i32).max(1) as u32;
+    let pref_h = to_phys(content_height as i32).max(1) as u32;
+    let gap_px = to_phys(gap);
+
+    let left_avail = (panel_left - wx - gap_px).max(0) as u32;
+    let width = pref_w.min(left_avail).max(1);
+    let max_h = (work_bottom - panel_top).max(0) as u32;
+    let height = pref_h.min(max_h).max(1);
+
+    let x = panel_left - gap_px - width as i32;
+    let y = panel_top.clamp(wy, (work_bottom - height as i32).max(wy));
+
+    PreviewPlacement {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+/// Position the sidebar window beside the visual main panel (left side).
+fn position_sidebar(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let main_pos = main
+        .outer_position()
+        .map_err(|e| format!("main outer_position failed: {:?}", e))?;
+    let scale = main.scale_factor().unwrap_or(1.0);
+    let monitor = main
+        .current_monitor()
+        .map_err(|e| format!("current_monitor failed: {:?}", e))?
+        .ok_or_else(|| "no monitor".to_string())?;
+    let wa = monitor.work_area();
+    let placement = place_sidebar(
+        (main_pos.x, main_pos.y),
+        scale,
+        (wa.position.x, wa.position.y, wa.size.width, wa.size.height),
+        PANEL_OFFSET,
+        PREVIEW_GAP,
+        SIDEBAR_WINDOW_W,
+        SIDEBAR_WINDOW_H,
+    );
+    window
+        .set_size(tauri::PhysicalSize::new(placement.width, placement.height))
+        .map_err(|e| format!("sidebar set_size failed: {:?}", e))?;
+    window
+        .set_position(tauri::PhysicalPosition::new(placement.x, placement.y))
+        .map_err(|e| format!("sidebar set_position failed: {:?}", e))?;
+    Ok(())
+}
+
+/// Show/hide the sidebar window to match the runtime UI state + panel
+/// visibility. Creates the window on first open (main-thread only).
+fn apply_sidebar_visibility(app: &tauri::AppHandle, state: &AppState) {
+    let open = lock(&state.favorites_ui).open;
+    let panel_visible = app
+        .get_webview_window("main")
+        .map(|w| w.is_visible().unwrap_or(false))
+        .unwrap_or(false);
+
+    if open && panel_visible {
+        match get_or_create_sidebar_window(app) {
+            Ok(w) => {
+                let _ = position_sidebar(app, &w);
+                let _ = w.show();
+            }
+            Err(e) => log(&format!("[Mnemark] sidebar open failed: {}", e)),
+        }
+        if let Err(e) = get_or_create_drag_overlay_window(app) {
+            log(&format!("[Mnemark] drag overlay creation failed: {}", e));
+        }
+    } else if !open {
+        if let Some(w) = app.get_webview_window("favorites-sidebar") {
+            let _ = w.hide();
+        }
+        if let Some(w) = app.get_webview_window("drag-overlay") {
+            let _ = w.hide();
+        }
+    }
+    // open && !panel_visible: leave hidden — show_panel restores it.
+}
+
+/// Re-surface a still-open sidebar on panel reopen (state preserved through
+/// hide_panel). Only touches an existing window — creation happens on first
+/// open, not here.
+fn restore_sidebar_if_open(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if !lock(&state.favorites_ui).open {
+        return;
+    }
+    if let Some(w) = app.get_webview_window("favorites-sidebar") {
+        if position_sidebar(app, &w).is_ok() {
+            let _ = w.show();
+        }
+    }
+}
+
 fn toggle_panel(app: &tauri::AppHandle) {
     let visible = app
         .get_webview_window("main")
@@ -1160,7 +1686,12 @@ pub fn run(_hidden: bool) {
     // launch reads the migrated files. Errors preserve the legacy data and are
     // surfaced through the existing startup-error UI, never silently dropped.
     let migration_error = migration::migrate_legacy_data().err();
-    let config = AppConfig::load();
+    let mut config = AppConfig::load();
+    // Self-heal an invalid favorites chord from a hand-edited config: fall back
+    // to the default rather than carrying a malformed shortcut into the UI.
+    if config.favorites_toggle_shortcut.validate().is_err() {
+        config.favorites_toggle_shortcut = PanelShortcut::default();
+    }
     let mut history_store = HistoryStore::new();
 
     // Optional SQLite persistence: reload history left from previous runs, then
@@ -1222,11 +1753,23 @@ pub fn run(_hidden: bool) {
         None
     };
 
+    // Favorites are always persisted, independent of the history `persist`
+    // toggle: open the favorites store (its own tables in mnemark.db).
+    let favorites = match FavoritesStore::open() {
+        Ok(f) => Some(f),
+        Err(e) => {
+            log(&format!("[Mnemark] failed to open favorites store: {}", e));
+            None
+        }
+    };
+
     let history = Arc::new(Mutex::new(history_store));
     let config_store = Arc::new(Mutex::new(config.clone()));
     let monitor_running = Arc::new(Mutex::new(true));
     let last_deleted = Arc::new(Mutex::new(None));
     let persistence = Arc::new(Mutex::new(persistence));
+    let favorites = Arc::new(Mutex::new(favorites));
+    let favorites_ui = Arc::new(Mutex::new(FavoritesUiState::default()));
     let tray_items = Arc::new(Mutex::new(None));
     let startup_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(migration_error));
 
@@ -1246,6 +1789,8 @@ pub fn run(_hidden: bool) {
             startup_error: startup_error.clone(),
             preview: Arc::new(Mutex::new(None)),
             preview_generation: Arc::new(AtomicU64::new(0)),
+            favorites: favorites.clone(),
+            favorites_ui: favorites_ui.clone(),
         })
         .setup(move |app| {
             let resource_dir = app.path().resource_dir().unwrap_or_default();
@@ -1316,12 +1861,14 @@ pub fn run(_hidden: bool) {
 
             let pause_item = MenuItemBuilder::with_id("pause", labels.pause).build(app)?;
             let settings_item = MenuItemBuilder::with_id("settings", labels.settings).build(app)?;
+            let tutorial_item = MenuItemBuilder::with_id("tutorial", labels.tutorial).build(app)?;
             let about_item = MenuItemBuilder::with_id("about", labels.about).build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", labels.quit).build(app)?;
 
             let menu = MenuBuilder::new(app)
                 .item(&pause_item)
                 .item(&settings_item)
+                .item(&tutorial_item)
                 .separator()
                 .item(&about_item)
                 .item(&quit_item)
@@ -1351,6 +1898,9 @@ pub fn run(_hidden: bool) {
                     "settings" => {
                         let _ = open_settings_window(app);
                     }
+                    "tutorial" => {
+                        let _ = open_tutorial_window(app);
+                    }
                     "about" => {
                         let _ = open_about_dialog(app);
                     }
@@ -1366,9 +1916,18 @@ pub fn run(_hidden: bool) {
             *lock(&tray_items) = Some(TrayMenuItems {
                 pause: pause_item.clone(),
                 settings: settings_item.clone(),
+                tutorial: tutorial_item.clone(),
                 about: about_item.clone(),
                 quit: quit_item.clone(),
             });
+
+            // Auto-open the tutorial once (deferred while any startup/migration
+            // error is present, so it never stacks on top of the Settings error).
+            if lock(&startup_error).is_none()
+                && tutorial_needed(lock(&config_store).tutorial_version)
+            {
+                let _ = open_tutorial_window(&handle);
+            }
 
             Ok(())
         })
@@ -1390,6 +1949,23 @@ pub fn run(_hidden: bool) {
             hide_clip_preview,
             hide_panel_command,
             get_active_clip_preview,
+            list_collections,
+            create_collection,
+            rename_collection,
+            delete_collection,
+            reorder_collections,
+            add_favorite,
+            remove_favorite,
+            list_favorite_items,
+            favorite_collection_ids,
+            paste_favorite,
+            copy_favorite,
+            show_favorite_preview,
+            get_favorites_ui_state,
+            set_favorites_open,
+            set_favorites_selected,
+            complete_tutorial,
+            show_panel_command,
             update::update_channel,
             update::check_for_updates,
             update::install_update,
@@ -1445,12 +2021,168 @@ fn open_about_dialog(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
 
     let _ = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("about.html".into()))
         .title("About Mnemark")
-        .inner_size(360.0, 420.0)
+        .inner_size(440.0, 540.0)
         .resizable(false)
         .center()
         .build()?;
 
     Ok(())
+}
+
+// === Tutorial ===
+
+/// Mark the tutorial as seen (idempotent): bump the stored version and save.
+fn mark_tutorial_seen(state: &AppState) -> Result<(), String> {
+    let mut config = lock(&state.config);
+    if config.tutorial_version < CURRENT_TUTORIAL_VERSION {
+        config.tutorial_version = CURRENT_TUTORIAL_VERSION;
+        config.save()
+    } else {
+        Ok(())
+    }
+}
+
+/// Pure tutorial-reopen action, decoupled from window handles so the tray
+/// reopen policy is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum TutorialAction {
+    /// Reopen a hidden window: show, recenter, focus.
+    Show,
+    /// Already visible: focus only.
+    Focus,
+}
+
+/// Decide the action for the tray "Tutorial" click given current visibility.
+fn tutorial_action_on_reopen(visible: bool) -> TutorialAction {
+    if visible {
+        TutorialAction::Focus
+    } else {
+        TutorialAction::Show
+    }
+}
+
+/// Open (or focus) the tutorial window. Closing it by any means marks the
+/// version seen — so the window's own close button counts as "skip" — but hides
+/// instead of destroying so a first-run portable launch keeps its last window.
+fn open_tutorial_window(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    if let Some(window) = app.get_webview_window("tutorial") {
+        match tutorial_action_on_reopen(window.is_visible().unwrap_or(false)) {
+            TutorialAction::Show => {
+                let _ = window.center();
+                let _ = window.show();
+                window.set_focus()?;
+                // Tell the (reused) frontend this is a fresh session so it can
+                // re-arm Skip/Start and restart from the first page.
+                let _ = app.emit("tutorial-reopened", ());
+            }
+            TutorialAction::Focus => window.set_focus()?,
+        }
+        return Ok(());
+    }
+
+    let w = WebviewWindowBuilder::new(app, "tutorial", WebviewUrl::App("tutorial.html".into()))
+        .title("Mnemark Tutorial")
+        .inner_size(500.0, 600.0)
+        .resizable(false)
+        .center()
+        .build()?;
+
+    let app_handle = app.clone();
+    w.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            // Never destroy: mark seen and hide, so the tutorial being the last
+            // window does not close it and wedge the tray. `app.exit(0)` still
+            // exits — it bypasses per-window CloseRequested.
+            api.prevent_close();
+            let state = app_handle.state::<AppState>();
+            let _ = mark_tutorial_seen(&state);
+            if let Some(window) = app_handle.get_webview_window("tutorial") {
+                let _ = window.hide();
+            }
+        }
+    });
+    Ok(())
+}
+
+/// The single main-thread action that completes the tutorial. Both flags live
+/// in one value so the executor runs the hide and (for Start) the panel reopen
+/// together on the main thread — never a bare `show_panel` on the IPC thread,
+/// whose first-run window creation would deadlock the event loop.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct CompleteTutorialAction {
+    hide_tutorial: bool,
+    open_history: bool,
+}
+
+/// Pure dispatch decision for a tutorial close/finish (testable, no window
+/// handles). Start (`open_history`) must carry the reopen in the SAME action
+/// as the hide, not as a second dispatch.
+fn complete_tutorial_action(open_history: bool) -> CompleteTutorialAction {
+    CompleteTutorialAction {
+        hide_tutorial: true,
+        open_history,
+    }
+}
+
+/// Execute the completion's window mutations. Must only run on the Tauri main
+/// thread (the caller dispatches via `run_on_main_thread`): `show_panel` first
+/// creates the "main" window, which cannot be built off-thread. Idempotent — a
+/// duplicate Start hides an already-hidden tutorial and reuses the existing
+/// panel window, so a double-click never creates a second window or wedges.
+fn apply_complete_tutorial_on_main_thread(
+    app: &tauri::AppHandle,
+    action: CompleteTutorialAction,
+) -> Result<(), String> {
+    if action.hide_tutorial {
+        if let Some(w) = app.get_webview_window("tutorial") {
+            w.hide()
+                .map_err(|e| format!("tutorial hide failed: {:?}", e))?;
+        }
+    }
+    if action.open_history {
+        show_panel(app);
+    }
+    Ok(())
+}
+
+/// Tutorial close/skip/finish. `open_history` is true for "finish" — it opens
+/// the history panel after marking the version seen. All window hide/show/create
+/// work is dispatched to the Tauri main thread; only the version save runs on
+/// the IPC thread, and no config lock is held across that dispatch.
+#[tauri::command]
+async fn complete_tutorial(
+    app: tauri::AppHandle,
+    open_history: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // Hide and (optionally) open history even if the save fails; report the
+    // save error so a disk failure retries on next launch instead of being
+    // silently swallowed.
+    let save_result = mark_tutorial_seen(&state);
+    let action = complete_tutorial_action(open_history);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(apply_complete_tutorial_on_main_thread(&handle, action));
+    })
+    .map_err(|e| format!("run_on_main_thread failed: {:?}", e))?;
+
+    let window_result = rx
+        .await
+        .map_err(|_| "tutorial completion channel closed".to_string())?;
+
+    window_result?;
+    save_result
+}
+
+/// Expose the panel show primitive so the tutorial (or any other surface) can
+/// open/restore the history panel.
+#[tauri::command]
+fn show_panel_command(app: tauri::AppHandle) {
+    show_panel(&app);
 }
 
 #[cfg(test)]
@@ -1696,5 +2428,165 @@ mod preview_generation_tests {
         // The newest intent is current; an unchanged token stays current.
         assert!(show_is_current(second, second));
         assert!(show_is_current(first, first));
+    }
+}
+
+#[cfg(test)]
+mod favorites_ui_tests {
+    use super::{apply_sidebar_toggle, clear_selection_if_deleted, FavoritesUiState};
+
+    #[test]
+    fn closing_sidebar_clears_selection() {
+        let mut ui = FavoritesUiState {
+            open: true,
+            selected_collection: Some("c1".to_string()),
+        };
+        apply_sidebar_toggle(&mut ui, false);
+        assert!(!ui.open);
+        assert_eq!(ui.selected_collection, None);
+    }
+
+    #[test]
+    fn opening_sidebar_keeps_state() {
+        let mut ui = FavoritesUiState {
+            open: false,
+            selected_collection: None,
+        };
+        apply_sidebar_toggle(&mut ui, true);
+        assert!(ui.open);
+    }
+
+    #[test]
+    fn selecting_history_keeps_sidebar_open() {
+        // "Selecting history keeps sidebar open": only `selected_collection`
+        // changes; `open` is untouched by set_favorites_selected.
+        let ui = FavoritesUiState {
+            open: true,
+            selected_collection: Some("c1".to_string()),
+        };
+        // set_favorites_selected(None) is modeled directly here.
+        let mut ui = ui;
+        ui.selected_collection = None;
+        assert!(ui.open);
+        assert_eq!(ui.selected_collection, None);
+    }
+
+    #[test]
+    fn deleting_selected_collection_returns_to_history() {
+        let mut ui = FavoritesUiState {
+            open: true,
+            selected_collection: Some("c1".to_string()),
+        };
+        clear_selection_if_deleted(&mut ui, "c1");
+        assert_eq!(ui.selected_collection, None);
+        assert!(ui.open, "sidebar stays open after deleting the selection");
+    }
+
+    #[test]
+    fn deleting_unselected_collection_leaves_selection() {
+        let mut ui = FavoritesUiState {
+            open: true,
+            selected_collection: Some("c2".to_string()),
+        };
+        clear_selection_if_deleted(&mut ui, "c1");
+        assert_eq!(ui.selected_collection.as_deref(), Some("c2"));
+    }
+}
+
+#[cfg(test)]
+mod tutorial_tests {
+    use super::tutorial_needed;
+
+    #[test]
+    fn unseen_tutorial_is_needed() {
+        assert!(tutorial_needed(0));
+    }
+
+    #[test]
+    fn current_tutorial_is_not_needed() {
+        assert!(!tutorial_needed(super::CURRENT_TUTORIAL_VERSION));
+    }
+}
+
+#[cfg(test)]
+mod tutorial_lifecycle_tests {
+    use super::{
+        complete_tutorial_action, tutorial_action_on_reopen, CompleteTutorialAction, TutorialAction,
+    };
+
+    #[test]
+    fn tray_reopens_a_hidden_tutorial() {
+        // Tray click on an existing-but-hidden window must show+center+focus,
+        // not just set_focus (which is a no-op on a hidden window).
+        assert_eq!(tutorial_action_on_reopen(false), TutorialAction::Show);
+    }
+
+    #[test]
+    fn tray_focuses_an_already_visible_tutorial() {
+        assert_eq!(tutorial_action_on_reopen(true), TutorialAction::Focus);
+    }
+
+    #[test]
+    fn start_is_one_main_thread_action_hiding_and_opening_history() {
+        // Start must be a SINGLE action that hides the tutorial AND reopens the
+        // panel — the executor runs both on the main thread together. Splitting
+        // them would put `show_panel`'s first-run window creation back on the
+        // IPC thread and deadlock the event loop.
+        assert_eq!(
+            complete_tutorial_action(true),
+            CompleteTutorialAction {
+                hide_tutorial: true,
+                open_history: true
+            }
+        );
+    }
+
+    #[test]
+    fn skip_hides_without_opening_history() {
+        // X / Skip / Escape: hide, never destroy (a first-run portable launch
+        // has the tutorial as its only window) and never reopen the panel.
+        assert_eq!(
+            complete_tutorial_action(false),
+            CompleteTutorialAction {
+                hide_tutorial: true,
+                open_history: false
+            }
+        );
+    }
+}
+
+#[cfg(test)]
+mod sidebar_placement_tests {
+    use super::place_sidebar;
+
+    fn place(main_pos: (i32, i32), work_area: (i32, i32, u32, u32)) -> super::PreviewPlacement {
+        place_sidebar(main_pos, 1.0, work_area, 30, 8, 360, 540)
+    }
+
+    #[test]
+    fn left_of_panel_with_full_space() {
+        let p = place((500, 100), (0, 0, 1920, 1080));
+        // panel_left = 530; left_avail = 522 -> full width 360.
+        assert_eq!(p.width, 360);
+        assert_eq!(p.x, 530 - 8 - 360); // 162
+        assert_eq!(p.y, 130);
+        assert_eq!(p.height, 540);
+        assert!(p.x + p.width as i32 <= 530);
+    }
+
+    #[test]
+    fn width_clamped_to_left_space() {
+        let p = place((100, 100), (0, 0, 1920, 1080));
+        // panel_left = 130; left_avail = 122 -> clamped.
+        assert_eq!(p.width, 122);
+        assert_eq!(p.x, 0);
+    }
+
+    #[test]
+    fn height_clamped_to_work_area_bottom() {
+        let p = place((500, 700), (0, 0, 1920, 800));
+        // panel_top = 730; only 70px to work bottom.
+        assert_eq!(p.y, 730);
+        assert_eq!(p.height, 70);
     }
 }

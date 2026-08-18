@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mnemark Tutorial</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="tutorial-body">
+    <div id="tutorial-panel">
+      <header class="tutorial-header">
+        <h1 data-i18n="tutorial">教學</h1>
+        <div class="tutorial-progress" aria-live="polite" id="tutorial-progress"></div>
+        <div class="tutorial-dots" id="tutorial-dots" role="tablist"></div>
+      </header>
+
+      <main class="tutorial-body-content">
+        <h2 id="tutorial-page-title"></h2>
+        <div id="tutorial-page-body" class="tutorial-page-body"></div>
+      </main>
+
+      <footer class="tutorial-footer">
+        <button type="button" id="tutorial-skip" class="tutorial-skip" data-i18n="tutorialSkip">略過</button>
+        <div class="tutorial-footer-nav">
+          <button type="button" id="tutorial-back" class="btn-cancel" data-i18n="tutorialBack">上一步</button>
+          <button type="button" id="tutorial-next" class="btn-primary" data-i18n="tutorialNext">下一步</button>
+          <button type="button" id="tutorial-start" class="btn-primary hidden" data-i18n="tutorialStart">開始使用</button>
+        </div>
+      </footer>
+    </div>
+    <script type="module" src="/src/tutorial.ts" defer></script>
+  </body>
+</html>

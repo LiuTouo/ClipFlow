@@ -38,3 +38,5 @@ clipflow.db
 .claude/
 .search-focus-report.md
 CLAUDE.md
+.aider*
+src-tauri/target-verification/

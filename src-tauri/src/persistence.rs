@@ -295,7 +295,7 @@ fn upsert_on(conn: &Connection, clip: &Clip) -> Result<(), String> {
     Ok(())
 }
 
-fn db_path() -> std::path::PathBuf {
+pub(crate) fn db_path() -> std::path::PathBuf {
     crate::models::data_dir().join("mnemark.db")
 }
 

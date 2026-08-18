@@ -13,6 +13,9 @@
         <input id="search-input" type="text" placeholder="搜尋剪貼簿歷史…" data-i18n-placeholder="searchPlaceholder" spellcheck="false" aria-describedby="search-shortcut-hint" />
         <kbd class="search-keycap" aria-hidden="true">/</kbd>
         <span id="search-shortcut-hint" class="sr-only" data-i18n="searchShortcutHint">按 / 聚焦搜尋</span>
+        <button id="favorites-toggle" class="favorites-toggle" aria-pressed="false" data-i18n-aria-label="sidebarOpen">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        </button>
       </div>
       <div id="filter-bar" role="group" aria-label="Filter by type">
         <button class="filter-btn active" data-filter="all" aria-pressed="true">
@@ -48,12 +51,8 @@
         <span id="empty-hint" data-i18n="emptyHint">複製一些內容就會出現在這裡</span>
       </div>
       <div id="toast" class="toast hidden"></div>
-      <div id="clip-action-menu" class="clip-action-menu hidden" role="menu">
-        <button class="menu-item menu-item-delete" role="menuitem">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-          <span data-i18n="deleteTitle">刪除</span>
-        </button>
-      </div>
+      <div id="clip-action-menu" class="clip-action-menu hidden" role="menu"></div>
+      <div id="add-to-collection-menu" class="clip-action-menu hidden" role="menu"></div>
     </div>
     <script type="module" src="/src/main.ts" defer></script>
   </body>

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyI18n, setLanguage, t, localizeBackendError } from "./i18n";
 import { applyTheme } from "./theme";
+import { shortcutLabel, isModifierCode, isFunctionCode, isPrintableCode, FAVORITES_DEFAULT_CODES } from "./shortcut";
 
 interface AppConfig {
   text_size_limit_kb: number;
@@ -21,6 +22,8 @@ interface AppConfig {
   paste_files_as_files: boolean;
   auto_update: boolean;
   remember_history_filter: boolean;
+  favorites_toggle_shortcut: { codes: string[] };
+  tutorial_version: number;
 }
 
 // The saved config is the "baseline" the form is compared against for the
@@ -29,6 +32,12 @@ let config: AppConfig;
 let loading = true;
 let saving = false;
 
+// Favorites toggle chord — captured as physical KeyboardEvent.code values.
+let favoritesShortcutCodes: string[] = FAVORITES_DEFAULT_CODES;
+let recordingFavoritesShortcut = false;
+let favoritesHeldModifiers: string[] = [];
+let favoritesModifiersSeen = new Set<string>();
+
 const form = document.getElementById("settings-form") as HTMLFormElement;
 const fieldset = document.getElementById("settings-fieldset") as HTMLFieldSetElement;
 const saveBtn = document.getElementById("btn-save") as HTMLButtonElement;
@@ -36,6 +45,8 @@ const cancelBtn = document.getElementById("btn-cancel") as HTMLButtonElement;
 const statusEl = document.getElementById("settings-status") as HTMLElement;
 const hotkeyInput = document.getElementById("setting-hotkey") as HTMLInputElement;
 const hotkeyError = document.getElementById("hotkey-error") as HTMLElement;
+const favoritesShortcutInput = document.getElementById("setting-favorites-shortcut") as HTMLInputElement;
+const favoritesShortcutError = document.getElementById("favorites-shortcut-error") as HTMLElement;
 
 function textInput(id: string): HTMLInputElement {
   return document.getElementById(id) as HTMLInputElement;
@@ -69,10 +80,16 @@ function readForm(): AppConfig {
     ui_opacity_percent: Number(textInput("setting-ui-opacity").value),
     language: selectInput("setting-language").value,
     exclusion_list: parseExclusions((document.getElementById("setting-exclusions") as HTMLTextAreaElement).value),
+    favorites_toggle_shortcut: { codes: [...favoritesShortcutCodes] },
+    tutorial_version: config.tutorial_version,
   };
 }
 
 function exclusionListsEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+function favoritesCodesEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
@@ -93,7 +110,9 @@ function configsEqual(a: AppConfig, b: AppConfig): boolean {
     && a.theme === b.theme
     && a.ui_opacity_percent === b.ui_opacity_percent
     && a.language === b.language
-    && exclusionListsEqual(a.exclusion_list, b.exclusion_list);
+    && exclusionListsEqual(a.exclusion_list, b.exclusion_list)
+    && favoritesCodesEqual(a.favorites_toggle_shortcut.codes, b.favorites_toggle_shortcut.codes)
+    && a.tutorial_version === b.tutorial_version;
 }
 
 function isDirty(): boolean {
@@ -217,6 +236,8 @@ function populateForm() {
   selectInput("setting-language").value = config.language || "zh-TW";
   (document.getElementById("setting-exclusions") as HTMLTextAreaElement).value =
     config.exclusion_list.join("\n");
+  favoritesShortcutCodes = (config.favorites_toggle_shortcut?.codes ?? FAVORITES_DEFAULT_CODES).slice();
+  updateFavoritesShortcutDisplay();
 }
 
 function updateOpacityDisplay(value: number) {
@@ -265,6 +286,100 @@ function onHotkeyBlur() {
   hotkeyInput.readOnly = true;
   clearHotkeyError();
   updateDirtyState();
+}
+
+// === Favorites shortcut recording (physical KeyboardEvent.code values) ===
+function updateFavoritesShortcutDisplay() {
+  favoritesShortcutInput.value = shortcutLabel(favoritesShortcutCodes);
+}
+
+function clearFavoritesShortcutError() {
+  favoritesShortcutError.textContent = "";
+  favoritesShortcutError.classList.remove("visible");
+}
+
+function showFavoritesShortcutError(msg: string) {
+  favoritesShortcutError.textContent = msg;
+  favoritesShortcutError.classList.add("visible");
+}
+
+function startFavoritesRecording() {
+  clearFavoritesShortcutError();
+  recordingFavoritesShortcut = true;
+  favoritesHeldModifiers = [];
+  favoritesModifiersSeen = new Set();
+  favoritesShortcutInput.classList.add("recording");
+  favoritesShortcutInput.value = t("pressKeysFavorites");
+  favoritesShortcutInput.readOnly = true;
+}
+
+function cancelFavoritesRecording() {
+  recordingFavoritesShortcut = false;
+  favoritesHeldModifiers = [];
+  favoritesModifiersSeen = new Set();
+  favoritesShortcutInput.classList.remove("recording");
+  favoritesShortcutInput.readOnly = true;
+  updateFavoritesShortcutDisplay();
+  updateDirtyState();
+}
+
+function commitFavoritesShortcut(codes: string[]) {
+  favoritesShortcutCodes = codes;
+  recordingFavoritesShortcut = false;
+  favoritesHeldModifiers = [];
+  favoritesModifiersSeen = new Set();
+  favoritesShortcutInput.classList.remove("recording");
+  favoritesShortcutInput.readOnly = true;
+  updateFavoritesShortcutDisplay();
+  updateDirtyState();
+}
+
+function onFavoritesShortcutKeydown(e: KeyboardEvent) {
+  if (!recordingFavoritesShortcut) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "Escape") { cancelFavoritesRecording(); return; }
+  const code = e.code;
+  if (isModifierCode(code)) {
+    favoritesModifiersSeen.add(code);
+    if (!favoritesHeldModifiers.includes(code)) favoritesHeldModifiers.push(code);
+    return;
+  }
+  if (isFunctionCode(code)) {
+    commitFavoritesShortcut([...favoritesHeldModifiers, code]);
+    return;
+  }
+  if (isPrintableCode(code)) {
+    if (favoritesHeldModifiers.length === 0) {
+      showFavoritesShortcutError(t("hotkeyNeedModifier"));
+      cancelFavoritesRecording();
+      return;
+    }
+    commitFavoritesShortcut([...favoritesHeldModifiers, code]);
+    return;
+  }
+  // Reserved or unrecognized physical code.
+  showFavoritesShortcutError(t("hotkeyInvalid"));
+  cancelFavoritesRecording();
+}
+
+function onFavoritesShortcutKeyup(e: KeyboardEvent) {
+  if (!recordingFavoritesShortcut) return;
+  if (!isModifierCode(e.code)) return;
+  favoritesHeldModifiers = favoritesHeldModifiers.filter((c) => c !== e.code);
+  // A bare modifier tap completes when the last held modifier is released.
+  if (favoritesHeldModifiers.length === 0) {
+    if (favoritesModifiersSeen.size === 1) {
+      commitFavoritesShortcut([...favoritesModifiersSeen]);
+    } else {
+      showFavoritesShortcutError(t("hotkeyInvalid"));
+      cancelFavoritesRecording();
+    }
+  }
+}
+
+function onFavoritesShortcutBlur() {
+  if (recordingFavoritesShortcut) cancelFavoritesRecording();
 }
 
 function onHotkeyKeydown(e: KeyboardEvent) {
@@ -365,6 +480,11 @@ function bindFormEvents() {
   hotkeyInput.addEventListener("click", startRecording);
   hotkeyInput.addEventListener("keydown", onHotkeyKeydown);
   hotkeyInput.addEventListener("blur", onHotkeyBlur);
+
+  favoritesShortcutInput.addEventListener("click", startFavoritesRecording);
+  favoritesShortcutInput.addEventListener("keydown", onFavoritesShortcutKeydown);
+  favoritesShortcutInput.addEventListener("keyup", onFavoritesShortcutKeyup);
+  favoritesShortcutInput.addEventListener("blur", onFavoritesShortcutBlur);
 }
 
 window.addEventListener("DOMContentLoaded", init);

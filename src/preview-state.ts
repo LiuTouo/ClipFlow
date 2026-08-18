@@ -40,12 +40,14 @@ export class PreviewController {
   }
 
   /** Decide what a Space keydown should do. `hoveredId` is the clip id of the
-   * live row under the pointer, or null (no live row). */
-  decideSpaceKeydown(repeat: boolean, hoveredId: string | null): SpaceAction {
+   * live row under the pointer (or null); `selectedId` is the keyboard-selected
+   * row's id (or null), used as a fallback when nothing is hovered. */
+  decideSpaceKeydown(repeat: boolean, hoveredId: string | null, selectedId: string | null): SpaceAction {
     if (repeat) return this.spaceHeld ? { type: "swallow" } : { type: "ignore" };
     if (this.isOpen) return { type: "close" };
-    if (hoveredId === null) return { type: "ignore" };
-    return { type: "open", id: hoveredId };
+    const target = hoveredId ?? selectedId;
+    if (target === null) return { type: "ignore" };
+    return { type: "open", id: target };
   }
 
   /** A non-repeat Space press (open or close) is consumed: suppress its

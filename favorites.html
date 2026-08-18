@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mnemark Drawer</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="favorites-body">
+    <div id="favorites-panel">
+      <header class="favorites-header">
+        <h1 data-i18n="favorites">抽屜</h1>
+        <button id="favorites-add" class="favorites-add-btn" data-i18n-title="favoritesAdd" data-i18n-aria-label="favoritesAdd">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+      </header>
+
+      <div id="favorites-create-row" class="favorites-create-row hidden">
+        <div id="favorites-create-input" class="favorites-create-input"
+          role="textbox" contenteditable="plaintext-only" spellcheck="false"
+          data-i18n-aria-label="collectionNamePlaceholder" aria-label="抽屜名稱"></div>
+      </div>
+
+      <div id="favorites-list"></div>
+
+      <div id="favorites-empty" class="favorites-empty hidden">
+        <p data-i18n="noCollections">尚無抽屜</p>
+        <span data-i18n="noCollectionsHint">點擊右上角「新增」建立第一個抽屜</span>
+      </div>
+
+      <div id="favorites-toast" class="toast hidden"></div>
+
+      <div id="favorites-more-menu" class="clip-action-menu hidden" role="menu"></div>
+    </div>
+
+    <!-- Remove collection confirmation modal -->
+    <div id="remove-modal" class="modal-overlay hidden" role="dialog" aria-modal="true"
+      aria-labelledby="remove-modal-title">
+      <div class="modal-panel" role="document">
+        <h2 id="remove-modal-title" data-i18n="removeCollectionTitle">刪除抽屜</h2>
+        <p id="remove-modal-body" class="modal-body"></p>
+        <div class="modal-actions">
+          <button type="button" id="remove-modal-cancel" class="btn-cancel" data-i18n="cancel">取消</button>
+          <button type="button" id="remove-modal-confirm" class="btn-primary btn-danger" data-i18n="removeCollectionConfirm">刪除</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/favorites.ts" defer></script>
+  </body>
+</html>

@@ -34,30 +34,40 @@ describe("open / close", () => {
 describe("Space keydown decision", () => {
   it("opens on a non-repeat Space over a hovered row", () => {
     const c = new PreviewController();
-    expect(c.decideSpaceKeydown(false, "clip-a")).toEqual({ type: "open", id: "clip-a" });
+    expect(c.decideSpaceKeydown(false, "clip-a", null)).toEqual({ type: "open", id: "clip-a" });
+  });
+
+  it("opens on the selected row when nothing is hovered", () => {
+    const c = new PreviewController();
+    expect(c.decideSpaceKeydown(false, null, "clip-selected")).toEqual({ type: "open", id: "clip-selected" });
+  });
+
+  it("prefers the hovered row over the selected row", () => {
+    const c = new PreviewController();
+    expect(c.decideSpaceKeydown(false, "clip-hover", "clip-selected")).toEqual({ type: "open", id: "clip-hover" });
   });
 
   it("closes on a non-repeat Space while open, even with no hover", () => {
     const c = openController("clip-a");
-    expect(c.decideSpaceKeydown(false, null)).toEqual({ type: "close" });
+    expect(c.decideSpaceKeydown(false, null, null)).toEqual({ type: "close" });
   });
 
-  it("stays search input on a non-repeat Space with no hovered row", () => {
+  it("ignores a non-repeat Space with no hovered or selected row", () => {
     const c = new PreviewController();
-    expect(c.decideSpaceKeydown(false, null)).toEqual({ type: "ignore" });
+    expect(c.decideSpaceKeydown(false, null, null)).toEqual({ type: "ignore" });
   });
 
   it("swallows the auto-repeat of a consumed Space press", () => {
     const c = new PreviewController();
     c.consumeSpace();
-    expect(c.decideSpaceKeydown(true, "clip-a")).toEqual({ type: "swallow" });
+    expect(c.decideSpaceKeydown(true, "clip-a", null)).toEqual({ type: "swallow" });
   });
 
   it("keyup re-arms: a repeat after release is ignored", () => {
     const c = new PreviewController();
     c.consumeSpace();
     c.releaseSpace();
-    expect(c.decideSpaceKeydown(true, "clip-a")).toEqual({ type: "ignore" });
+    expect(c.decideSpaceKeydown(true, "clip-a", null)).toEqual({ type: "ignore" });
   });
 });
 
@@ -113,6 +123,29 @@ describe("show completion vs resync ordering", () => {
     c.beginShow("clip-b");
     c.resolveShow(staleToken, "clip-a"); // stale
     expect(c.currentId).toBe("clip-b");
+  });
+});
+
+describe("dataset/visibility changes and target switching", () => {
+  it("switching preview target while open stays open", () => {
+    const c = openController("clip-a");
+    c.beginShow("clip-b"); // hover a different item while preview is open
+    expect(c.isOpen).toBe(true);
+    expect(c.currentId).toBe("clip-b");
+  });
+
+  it("a resync reading the same still-active id does not close the preview", () => {
+    const c = openController("clip-a");
+    const token = c.beginResync(); // dataset switch triggers a backend read
+    c.resolveResync(token, "clip-a"); // backend still shows clip-a
+    expect(c.isOpen).toBe(true);
+    expect(c.currentId).toBe("clip-a");
+  });
+
+  it("a non-repeat Space while open closes regardless of the hovered id", () => {
+    const c = openController("clip-a");
+    expect(c.decideSpaceKeydown(false, "clip-b", null)).toEqual({ type: "close" });
+    expect(c.decideSpaceKeydown(false, null, "clip-b")).toEqual({ type: "close" });
   });
 });
 
