@@ -86,7 +86,7 @@ async function refreshConfig(): Promise<void> {
   const config = await invoke<AppConfig>("get_config");
   setLanguage(config.language || "zh-TW");
   applyTheme(config.theme || "system");
-  const opacity = Math.min(100, Math.max(50, config.ui_opacity_percent ?? 96));
+  const opacity = Math.min(100, Math.max(50, config.ui_opacity_percent ?? 99));
   document.documentElement.style.setProperty("--panel-opacity", String(opacity / 100));
   matcher = new ShortcutMatcher(config.favorites_toggle_shortcut?.codes ?? FAVORITES_DEFAULT_CODES);
 }
@@ -706,7 +706,17 @@ async function init(): Promise<void> {
 
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("keyup", onKeyUp, true);
-  window.addEventListener("focus", () => { void cacheWindowGeometry(); });
+  window.addEventListener("focus", () => {
+    void cacheWindowGeometry();
+    // Reused drawer windows only got config on init; re-apply it on focus so
+    // opacity/theme/language/shortcut changes made elsewhere show up here.
+    refreshConfig()
+      .then(() => {
+        applyI18n();
+        render();
+      })
+      .catch(() => {});
+  });
 }
 
 function trapFocus(e: KeyboardEvent): void {

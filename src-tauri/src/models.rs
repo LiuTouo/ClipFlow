@@ -438,7 +438,7 @@ impl Default for AppConfig {
             vim_mode: false,
             debounce_ms: 200,
             theme: "system".to_string(),
-            ui_opacity_percent: 96,
+            ui_opacity_percent: 99,
             language: "zh-TW".to_string(),
             paste_files_as_files: true,
             auto_update: true,
@@ -576,7 +576,7 @@ mod backward_compat_tests {
         }"#;
         let cfg: AppConfig = serde_json::from_str(json).expect("deserialize old config");
         assert!(!cfg.remember_history_filter);
-        assert_eq!(cfg.ui_opacity_percent, 96);
+        assert_eq!(cfg.ui_opacity_percent, 99);
     }
 
     #[test]
@@ -812,8 +812,8 @@ mod sanitize_tests {
     }
 
     #[test]
-    fn opacity_defaults_to_96() {
-        assert_eq!(AppConfig::default().ui_opacity_percent, 96);
+    fn opacity_defaults_to_99() {
+        assert_eq!(AppConfig::default().ui_opacity_percent, 99);
     }
 
     #[test]

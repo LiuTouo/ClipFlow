@@ -104,7 +104,7 @@ async function init() {
     const config = await invoke<{ language?: string; theme?: string; ui_opacity_percent?: number }>("get_config");
     setLanguage(config.language || "zh-TW");
     applyTheme(config.theme || "system");
-    const opacity = Math.min(100, Math.max(50, config.ui_opacity_percent ?? 96));
+    const opacity = Math.min(100, Math.max(50, config.ui_opacity_percent ?? 99));
     document.documentElement.style.setProperty("--panel-opacity", String(opacity / 100));
   } catch {
     setLanguage("zh-TW");

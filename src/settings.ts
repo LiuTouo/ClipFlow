@@ -241,7 +241,7 @@ function populateForm() {
 }
 
 function updateOpacityDisplay(value: number) {
-  const opacity = Math.min(100, Math.max(50, Number.isFinite(value) ? value : 96));
+  const opacity = Math.min(100, Math.max(50, Number.isFinite(value) ? value : 99));
   textInput("setting-ui-opacity").value = String(opacity);
   (document.getElementById("setting-ui-opacity-value") as HTMLOutputElement).value = `${opacity}%`;
 }

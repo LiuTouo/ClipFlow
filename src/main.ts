@@ -80,7 +80,7 @@ async function refreshConfig() {
     pasteFilesAsFiles = config.paste_files_as_files !== false;
     rememberHistoryFilter = !!config.remember_history_filter;
     applyTheme(config.theme || "system");
-    const opacity = Math.min(100, Math.max(50, config.ui_opacity_percent ?? 96));
+    const opacity = Math.min(100, Math.max(50, config.ui_opacity_percent ?? 99));
     document.documentElement.style.setProperty("--panel-opacity", String(opacity / 100));
     shortcutMatcher = new ShortcutMatcher(config.favorites_toggle_shortcut?.codes ?? FAVORITES_DEFAULT_CODES);
   } catch (err) {
