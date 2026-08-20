@@ -27,6 +27,31 @@ pub fn hash_content(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// SHA-256 over a length-prefixed encoding of the path list. A delimiter join
+/// would make ["a;b"] and ["a","b"] collide; prefixing every element with its
+/// byte length keeps the encoding unambiguous.
+fn hash_file_paths(paths: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update((paths.len() as u64).to_be_bytes());
+    for p in paths {
+        hasher.update((p.len() as u64).to_be_bytes());
+        hasher.update(p.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Split a legacy ';'-joined FilePaths payload. Only for rows persisted before
+/// structured `file_paths` existed — that data was inherently ambiguous, so
+/// this is a best-effort fallback, never a canonical parse.
+pub fn split_legacy_file_text(text: &str) -> Vec<String> {
+    // No trim: paths were ';'-joined at capture time with no added
+    // whitespace, and real filenames may contain spaces.
+    text.split(';')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect()
+}
+
 /// Cut `text` to at most `limit` bytes, backing off to a UTF-8 char
 /// boundary — slicing a String mid-char panics, and a panic on the monitor
 /// thread silently kills clipboard monitoring. Returns (content, truncated).
@@ -137,6 +162,7 @@ fn try_capture_image(
             id: Clip::new_id(&content_hash, now),
             kind: ClipKind::Image,
             text_content: None,
+            file_paths: None,
             image_data: Some(dib_data),
             thumbnail_base64: if thumbnail_base64.is_empty() {
                 None
@@ -227,7 +253,10 @@ fn try_capture_file_paths(
         let _ = GlobalUnlock(handle);
         let _ = CloseClipboard();
 
-        let file_list = files.join(";");
+        // text_content is display/fallback text only (CRLF-joined, Windows
+        // text convention); the canonical paths live in file_paths verbatim —
+        // never delimiter-joined, because a filename may itself contain ';'.
+        let text = files.join("\r\n");
         let preview_names: Vec<String> = files
             .iter()
             .take(3)
@@ -246,18 +275,14 @@ fn try_capture_file_paths(
             preview
         };
 
-        let file_list_len = file_list.len() as u64;
-
-        let content_hash = {
-            let mut hasher = Sha256::new();
-            hasher.update(file_list.as_bytes());
-            hex::encode(hasher.finalize())
-        };
+        let byte_size = files.iter().map(|f| f.len() as u64).sum();
+        let content_hash = hash_file_paths(&files);
 
         Ok(Clip {
             id: Clip::new_id(&content_hash, now),
             kind: ClipKind::FilePaths,
-            text_content: Some(file_list),
+            text_content: Some(text),
+            file_paths: Some(files),
             image_data: None,
             thumbnail_base64: None,
             content_hash,
@@ -268,7 +293,7 @@ fn try_capture_file_paths(
             source_icon: None,
             captured_at: now,
             pinned: false,
-            byte_size: file_list_len,
+            byte_size,
         })
     }
 }
@@ -345,6 +370,7 @@ fn try_capture_text(
             id: Clip::new_id(&content_hash, now),
             kind: ClipKind::Text,
             text_content: Some(content),
+            file_paths: None,
             image_data: None,
             thumbnail_base64: None,
             content_hash,
@@ -782,6 +808,12 @@ pub fn write_text_to_clipboard(text: &str) -> Result<(), String> {
         let bytes = wide.len() * 2;
         let hmem = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|_| "Alloc failed".to_string())?;
         let ptr = GlobalLock(hmem);
+        if ptr.is_null() {
+            // GlobalLock failed: ownership never leaves us, free and bail
+            // before any copy through the null pointer.
+            let _ = GlobalFree(hmem);
+            return Err("GlobalLock failed".to_string());
+        }
         std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
         let _ = GlobalUnlock(hmem);
 
@@ -806,6 +838,10 @@ pub fn write_image_to_clipboard(data: &[u8]) -> Result<(), String> {
         let hmem =
             GlobalAlloc(GMEM_MOVEABLE, data.len()).map_err(|_| "Alloc failed".to_string())?;
         let ptr = GlobalLock(hmem);
+        if ptr.is_null() {
+            let _ = GlobalFree(hmem);
+            return Err("GlobalLock failed".to_string());
+        }
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
         let _ = GlobalUnlock(hmem);
 
@@ -858,6 +894,10 @@ pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
             fWide: BOOL(1),
         };
         let ptr = GlobalLock(hdrop);
+        if ptr.is_null() {
+            let _ = GlobalFree(hdrop);
+            return Err("GlobalLock failed".to_string());
+        }
         std::ptr::write(ptr as *mut DROPFILES, header);
         std::ptr::copy_nonoverlapping(
             wide.as_ptr(),
@@ -880,6 +920,12 @@ pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
             }
         };
         let tptr = GlobalLock(htext);
+        if tptr.is_null() {
+            // hdrop was never handed to the clipboard; free both.
+            let _ = GlobalFree(hdrop);
+            let _ = GlobalFree(htext);
+            return Err("GlobalLock failed".to_string());
+        }
         std::ptr::copy_nonoverlapping(wide_text.as_ptr(), tptr as *mut u16, wide_text.len());
         let _ = GlobalUnlock(htext);
 
@@ -907,26 +953,35 @@ pub fn write_files_to_clipboard(paths: &[String]) -> Result<(), String> {
     }
 }
 
-/// Split a stored ';'-joined FilePaths payload, drop paths that no longer
-/// exist, and write the survivors as CF_HDROP. When EVERY path is gone,
-/// fall back to writing the original text so paste still does something.
-/// Returns "files" or "text" so the caller can surface the fallback.
-pub fn write_files_to_clipboard_from_text(text: &str) -> Result<String, String> {
-    // No trim: paths were ';'-joined at capture time with no added
-    // whitespace, and real filenames may contain spaces.
-    let paths: Vec<String> = text
-        .split(';')
-        .filter(|p| !p.is_empty())
-        .map(|p| p.to_string())
+/// Write a canonical path list, dropping paths that no longer exist. When
+/// EVERY path is gone, fall back to writing `text` so paste still does
+/// something. Returns "files" or "text" so the caller can surface the fallback.
+pub fn write_files_to_clipboard_from_paths(paths: &[String], text: &str) -> Result<String, String> {
+    let existing: Vec<String> = paths
+        .iter()
         .filter(|p| std::path::Path::new(p).exists())
+        .cloned()
         .collect();
-
-    if paths.is_empty() {
+    if existing.is_empty() {
         write_text_to_clipboard(text)?;
         return Ok("text".to_string());
     }
-    write_files_to_clipboard(&paths)?;
+    write_files_to_clipboard(&existing)?;
     Ok("files".to_string())
+}
+
+#[cfg(test)]
+mod legacy_file_text_tests {
+    use super::split_legacy_file_text;
+
+    #[test]
+    fn legacy_split_drops_empty_segments() {
+        assert_eq!(
+            split_legacy_file_text("C:\\a;C:\\b"),
+            vec!["C:\\a", "C:\\b"]
+        );
+        assert!(split_legacy_file_text("").is_empty());
+    }
 }
 
 /// Send Ctrl+V via SendInput (the modern input API — keybd_event is legacy).
@@ -1010,6 +1065,23 @@ pub fn simulate_ctrl_v() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::truncate_text;
+
+    #[test]
+    fn file_path_hash_is_unambiguous_about_delimiter_characters() {
+        use super::hash_file_paths;
+        // A single "a;b" filename must never hash the same as two paths a, b.
+        let one = vec!["a;b".to_string()];
+        let two = vec!["a".to_string(), "b".to_string()];
+        assert_ne!(hash_file_paths(&one), hash_file_paths(&two));
+        // Stable and order- and content-sensitive.
+        assert_eq!(hash_file_paths(&one), hash_file_paths(&one));
+        assert_ne!(
+            hash_file_paths(&two),
+            hash_file_paths(&["b".to_string(), "a".to_string()])
+        );
+        // Empty-vs-one path never collide either.
+        assert_ne!(hash_file_paths(&[]), hash_file_paths(&two));
+    }
 
     #[test]
     fn short_text_is_not_truncated() {

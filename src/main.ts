@@ -707,7 +707,7 @@ async function pasteClip(clip: Clip) {
         break;
       case "FilePaths":
         if (pasteFilesAsFiles) {
-          await invoke<string>("paste_files", { text: clip.text_content || "" });
+          await invoke<string>("paste_files", { id: clip.id });
         } else {
           await invoke("paste_text", { text: clip.text_content || "" });
         }
@@ -745,7 +745,7 @@ async function copyOnly(clip: Clip) {
         break;
       case "FilePaths":
         if (pasteFilesAsFiles) {
-          const outcome = await invoke<string>("copy_only_files", { text: clip.text_content || "" });
+          const outcome = await invoke<string>("copy_only_files", { id: clip.id });
           if (outcome === "text") toastKey = "filesMissingFallback";
         } else {
           await invoke("copy_only_text", { text: clip.text_content || "" });
@@ -1118,8 +1118,7 @@ document.addEventListener("keydown", (e) => {
 
 window.addEventListener("keydown", (e) => {
   if (!isSpaceKey(e)) return;
-  if (!previewState.isOpen && isEditableActive()) return;
-  const action = previewState.decideSpaceKeydown(e.repeat, hoveredRowId(), selectedRowId());
+  const action = previewState.decideSpaceKeydown(isEditableActive(), e.repeat, hoveredRowId(), selectedRowId());
   switch (action.type) {
     case "swallow":
       e.preventDefault();

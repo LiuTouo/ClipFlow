@@ -39,10 +39,14 @@ export class PreviewController {
     return this.spaceHeld;
   }
 
-  /** Decide what a Space keydown should do. `hoveredId` is the clip id of the
-   * live row under the pointer (or null); `selectedId` is the keyboard-selected
-   * row's id (or null), used as a fallback when nothing is hovered. */
-  decideSpaceKeydown(repeat: boolean, hoveredId: string | null, selectedId: string | null): SpaceAction {
+  /** Decide what a Space keydown should do. `editableActive` is whether an
+   * INPUT/TEXTAREA/SELECT/contenteditable holds focus — an editable always
+   * wins, open preview included: the key must reach it untouched. `hoveredId`
+   * is the clip id of the live row under the pointer (or null); `selectedId`
+   * is the keyboard-selected row's id (or null), fallback when nothing is
+   * hovered. */
+  decideSpaceKeydown(editableActive: boolean, repeat: boolean, hoveredId: string | null, selectedId: string | null): SpaceAction {
+    if (editableActive) return { type: "ignore" };
     if (repeat) return this.spaceHeld ? { type: "swallow" } : { type: "ignore" };
     if (this.isOpen) return { type: "close" };
     const target = hoveredId ?? selectedId;

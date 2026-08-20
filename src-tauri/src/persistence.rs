@@ -42,7 +42,28 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             value INTEGER NOT NULL
         );",
     )
-    .map_err(|e| format!("Failed to initialize database schema: {}", e))
+    .map_err(|e| format!("Failed to initialize database schema: {}", e))?;
+    // Idempotent migration for DBs created before structured file paths: add
+    // the nullable JSON column only when schema introspection says it is
+    // missing — never by matching on the ALTER error string.
+    if !column_exists(conn, "clips", "file_paths_json")? {
+        conn.execute("ALTER TABLE clips ADD COLUMN file_paths_json TEXT", [])
+            .map_err(|e| format!("Failed to migrate clips schema: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Does `table` have a `column`? Schema introspection via PRAGMA table_info.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let sql = format!(
+        "SELECT 1 FROM pragma_table_info('{}') WHERE name = ?1",
+        table
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to inspect {} schema: {}", table, e))?;
+    stmt.exists(params![column])
+        .map_err(|e| format!("Failed to inspect {} schema: {}", table, e))
 }
 
 impl Persistence {
@@ -57,6 +78,24 @@ impl Persistence {
 
     #[cfg(test)]
     fn from_conn(conn: Connection) -> Self {
+        Self { conn }
+    }
+
+    /// Healthy in-memory store for lib-level consistency tests.
+    #[cfg(test)]
+    pub(crate) fn in_memory_for_test() -> Self {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        Self { conn }
+    }
+
+    /// Fault injection: schema initialized, then the clips table dropped, so
+    /// every history write fails deterministically.
+    #[cfg(test)]
+    pub(crate) fn broken_for_test() -> Self {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch("DROP TABLE clips").unwrap();
         Self { conn }
     }
 
@@ -80,7 +119,7 @@ impl Persistence {
             .prepare(
                 "SELECT id, kind, text_content, image_data, thumbnail_base64,
                         content_hash, preview, truncated, source_exe, source_title,
-                        source_icon, captured_at, pinned, byte_size
+                        source_icon, captured_at, pinned, byte_size, file_paths_json
                  FROM clips ORDER BY captured_at ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -92,10 +131,16 @@ impl Persistence {
                     "FilePaths" => ClipKind::FilePaths,
                     _ => ClipKind::Text,
                 };
+                // Corrupt JSON degrades to None (legacy-row fallback) — a
+                // hand-edited DB row must never panic the loader.
+                let file_paths_json: Option<String> = row.get(14)?;
+                let file_paths =
+                    file_paths_json.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
                 Ok(Clip {
                     id: row.get(0)?,
                     kind,
                     text_content: row.get(2)?,
+                    file_paths,
                     image_data: row.get(3)?,
                     thumbnail_base64: row.get(4)?,
                     content_hash: row.get(5)?,
@@ -117,10 +162,23 @@ impl Persistence {
         Ok(clips)
     }
 
-    /// Insert or refresh a Clip after a capture. On a content-hash conflict
-    /// only the recency fields change — matching in-memory dedup semantics.
-    pub fn upsert_capture(&self, clip: &Clip) -> Result<(), String> {
-        upsert_on(&self.conn, clip)
+    /// Atomically persist a capture/restore and the capacity evictions it
+    /// causes: one transaction, all-or-nothing, so the DB never holds an
+    /// evicted row alongside its replacement (a partial write would resurrect
+    /// deleted Clips on the next startup load).
+    pub fn persist_capture_with_evictions(
+        &mut self,
+        clip: &Clip,
+        evicted: &[String],
+    ) -> Result<(), String> {
+        let tx = self.conn.transaction().map_err(|e| e.to_string())?;
+        upsert_on(&tx, clip)?;
+        for id in evicted {
+            tx.execute("DELETE FROM clips WHERE id = ?1", params![id])
+                .map_err(|e| format!("Failed to delete evicted clip: {}", e))?;
+        }
+        tx.commit()
+            .map_err(|e| format!("Failed to commit capture write: {}", e))
     }
 
     /// Replace the entire table contents with the given Clips. Transactional:
@@ -262,18 +320,28 @@ fn kind_str(kind: &ClipKind) -> &'static str {
     }
 }
 
-/// The upsert behind both upsert_capture and dump, written against
+/// The upsert behind captures/restores and dump, written against
 /// &Connection so a transaction (which derefs to Connection) can use it.
 fn upsert_on(conn: &Connection, clip: &Clip) -> Result<(), String> {
+    // Serialization failure must propagate, never silently drop the canonical
+    // file paths to NULL.
+    let file_paths_json = clip
+        .file_paths
+        .as_ref()
+        .map(|p| {
+            serde_json::to_string(p).map_err(|e| format!("Failed to serialize file paths: {}", e))
+        })
+        .transpose()?;
     conn.execute(
         "INSERT INTO clips (id, kind, text_content, image_data, thumbnail_base64,
                             content_hash, preview, truncated, source_exe, source_title,
-                            source_icon, captured_at, pinned, byte_size)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                            source_icon, captured_at, pinned, byte_size, file_paths_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(content_hash) DO UPDATE SET
             captured_at = excluded.captured_at,
             source_exe = excluded.source_exe,
-            source_title = excluded.source_title",
+            source_title = excluded.source_title,
+            file_paths_json = excluded.file_paths_json",
         params![
             clip.id,
             kind_str(&clip.kind),
@@ -289,6 +357,7 @@ fn upsert_on(conn: &Connection, clip: &Clip) -> Result<(), String> {
             clip.captured_at as i64,
             clip.pinned as i64,
             clip.byte_size as i64,
+            file_paths_json,
         ],
     )
     .map_err(|e| format!("Failed to persist clip: {}", e))?;
@@ -331,6 +400,7 @@ mod tests {
             id: id.to_string(),
             kind: ClipKind::Text,
             text_content: Some(format!("content-{id}")),
+            file_paths: None,
             image_data: None,
             thumbnail_base64: None,
             content_hash: hash.to_string(),
@@ -372,6 +442,73 @@ mod tests {
         assert!(c.pinned);
         assert!(c.truncated);
         assert_eq!(c.byte_size, original.byte_size);
+    }
+
+    #[test]
+    fn file_paths_round_trip_exactly_including_semicolons_and_unicode() {
+        let mut p = test_persistence();
+        let paths = vec![
+            "C:\\tmp\\report;final.pdf".to_string(),
+            "C:\\tmp\\  spaced  name.txt".to_string(),
+            "C:\\tmp\\資料\\繁體檔名.txt".to_string(),
+        ];
+        let mut c = clip("f1", "fh1", 1);
+        c.kind = ClipKind::FilePaths;
+        c.file_paths = Some(paths.clone());
+        p.dump(std::slice::from_ref(&c)).unwrap();
+        let loaded = p.load_all().unwrap();
+        assert_eq!(loaded[0].file_paths.as_deref(), Some(paths.as_slice()));
+    }
+
+    #[test]
+    fn init_schema_twice_consecutively_succeeds() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Second init on an already-migrated schema must not error.
+        init_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn old_schema_rows_without_file_paths_column_load() {
+        // Simulate a pre-migration DB: create the old table shape, insert a
+        // row without file_paths_json, then let init_schema migrate it.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE clips (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, text_content TEXT,
+                image_data BLOB, thumbnail_base64 TEXT, content_hash TEXT NOT NULL UNIQUE,
+                preview TEXT NOT NULL, truncated INTEGER NOT NULL, source_exe TEXT NOT NULL,
+                source_title TEXT NOT NULL, source_icon TEXT, captured_at INTEGER NOT NULL,
+                pinned INTEGER NOT NULL, byte_size INTEGER NOT NULL
+            );
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+            INSERT INTO clips VALUES ('legacy1', 'FilePaths', 'C:\\a.txt;C:\\b.txt',
+                NULL, NULL, 'legacy-hash', 'legacy', 0, 'x.exe', '', NULL, 1, 0, 20);",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap(); // idempotent ALTER adds the column
+        let p = Persistence::from_conn(conn);
+        let clips = p.load_all().unwrap();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].id, "legacy1");
+        assert_eq!(clips[0].file_paths, None); // NULL column → legacy fallback
+        assert_eq!(
+            clips[0].text_content.as_deref(),
+            Some("C:\\a.txt;C:\\b.txt")
+        );
+    }
+
+    #[test]
+    fn corrupt_file_paths_json_degrades_to_legacy_fallback() {
+        let mut p = test_persistence();
+        let mut c = clip("f2", "fh2", 1);
+        c.kind = ClipKind::FilePaths;
+        p.dump(std::slice::from_ref(&c)).unwrap();
+        p.conn
+            .execute("UPDATE clips SET file_paths_json = '{not json'", [])
+            .unwrap();
+        let loaded = p.load_all().unwrap();
+        assert_eq!(loaded[0].file_paths, None);
     }
 
     #[test]

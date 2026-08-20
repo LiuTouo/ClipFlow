@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyI18n, setLanguage, t, localizeBackendError } from "./i18n";
 import { applyTheme } from "./theme";
@@ -185,15 +186,38 @@ function setLoadFailed() {
   setStatus(t("settingsLoadFailed"), true);
 }
 
-async function init() {
-  // Close paths must work even before (or without) a successful config load,
-  // so a failed load still leaves the user a way out.
-  bindCloseEvents();
+/** Clear every per-session transient: dirty state, errors, shortcut
+ * recording, saving. Called before each (re)load so a reopened window starts
+ * clean. `config` may still be the previous baseline here; populateForm()
+ * overwrites the fields right after. */
+function resetTransientState() {
+  saving = false;
+  form.classList.remove("is-saving");
+  clearHotkeyError();
+  clearFavoritesShortcutError();
+  hotkeyInput.classList.remove("recording");
+  hotkeyInput.readOnly = true;
+  recordingFavoritesShortcut = false;
+  favoritesHeldModifiers = [];
+  favoritesModifiersSeen = new Set<string>();
+  favoritesShortcutInput.classList.remove("recording");
+  favoritesShortcutInput.readOnly = true;
+}
 
+/** Monotonic token so a stale in-flight get_config (superseded by a newer
+ * reopen) is discarded instead of racing the newer reload. */
+let reloadToken = 0;
+
+async function loadConfig() {
+  const token = ++reloadToken;
+  resetTransientState();
   setLoading(true);
   try {
-    config = await invoke<AppConfig>("get_config");
+    const loaded = await invoke<AppConfig>("get_config");
+    if (token !== reloadToken) return;
+    config = loaded;
   } catch (err) {
+    if (token !== reloadToken) return;
     console.error("Failed to load config:", err);
     setLoadFailed();
     return;
@@ -204,9 +228,21 @@ async function init() {
   populateForm();
   applyI18n();
   document.title = `Mnemark ${t("settings")}`;
-  bindFormEvents();
   setLoading(false);
   clearStatus();
+}
+
+async function init() {
+  // Close paths must work even before (or without) a successful config load,
+  // so a failed load still leaves the user a way out.
+  bindCloseEvents();
+  // Bound exactly once for the lifetime of the (reused, hidden-not-closed)
+  // window; each reopen re-runs loadConfig instead of re-binding handlers.
+  bindFormEvents();
+  await listen("settings-reopened", () => {
+    void loadConfig();
+  });
+  await loadConfig();
 
   // When startup hotkey registration failed, the backend opened this window
   // and stashed the reason — show it inline so the user knows why they're

@@ -224,6 +224,34 @@ fn portable_update_dest() -> Option<PathBuf> {
         .map(|dir| dir.join("mnemark-update.exe"))
 }
 
+/// Write `bytes` to `staging`, flush it to disk, then atomically replace
+/// `dest` by rename. `staging` must live in the same directory as `dest` so
+/// the rename cannot cross volumes. On any failure the staging file is
+/// removed and `dest` is left exactly as it was — a half-written update
+/// never becomes the file the user runs.
+fn stage_atomic(
+    dest: &std::path::Path,
+    staging: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    use std::io::Write;
+
+    if let Err(e) = std::fs::File::create(staging).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    }) {
+        let _ = std::fs::remove_file(staging);
+        return Err(format!("Failed to stage update: {e}"));
+    }
+    // Windows rename (MoveFileEx with REPLACE_EXISTING) replaces an existing
+    // dest atomically; a reader either sees the old file or the new one.
+    if let Err(e) = std::fs::rename(staging, dest) {
+        let _ = std::fs::remove_file(staging);
+        return Err(format!("Failed to apply staged update: {e}"));
+    }
+    Ok(())
+}
+
 /// Delete a leftover portable-update exe next to the current one. Runs at
 /// startup: mnemark-update.exe only ever holds a downloaded update pending
 /// manual overwrite, so once Mnemark is running again the file is either
@@ -233,8 +261,10 @@ fn portable_update_dest() -> Option<PathBuf> {
 pub fn cleanup_stale_portable_update() {
     if let Some(stale) = portable_update_dest() {
         if stale.exists() {
-            let _ = std::fs::remove_file(stale);
+            let _ = std::fs::remove_file(&stale);
         }
+        // A staging file left behind by a failed/interrupted stage_atomic.
+        let _ = std::fs::remove_file(stale.with_extension("staging"));
     }
 }
 
@@ -256,7 +286,8 @@ pub async fn download_portable_update(url: String, sig_url: String) -> Result<St
         let sig_bytes = download_validated(&sig_url)?;
         let sig_text = String::from_utf8(sig_bytes).map_err(|e| e.to_string())?;
         verify_with_pubkey(&exe_bytes, &sig_text, UPDATE_PUBKEY)?;
-        std::fs::write(&dest, &exe_bytes).map_err(|e| e.to_string())?;
+        let staging = dest.with_extension("staging");
+        stage_atomic(&dest, &staging, &exe_bytes)?;
         Ok(dest.to_string_lossy().to_string())
     })
     .await
@@ -506,5 +537,67 @@ mod tests {
         ] {
             assert!(validate_download_url(bad).is_err(), "should reject: {bad}");
         }
+    }
+
+    /// Unique scratch dir per test (no tempfile dev-dependency): temp_dir +
+    /// test name + pid, wiped if left over from a previous run.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("mnemark-stage-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn staged_update_replaces_dest_and_leaves_no_staging_file() {
+        let dir = scratch("ok");
+        let dest = dir.join("mnemark-update.exe");
+        let staging = dir.join("mnemark-update.staging");
+        std::fs::write(&dest, b"old-exe").unwrap();
+
+        stage_atomic(&dest, &staging, b"new-exe-bytes").unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new-exe-bytes");
+        assert!(!staging.exists(), "staging file must be gone after rename");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staging_failure_cleans_up_and_preserves_existing_dest() {
+        let dir = scratch("create-fail");
+        let dest = dir.join("mnemark-update.exe");
+        std::fs::write(&dest, b"old-exe").unwrap();
+        // Force the staging write to fail: the staging path is a directory.
+        let staging = dir.join("mnemark-update.staging");
+        std::fs::create_dir(&staging).unwrap();
+
+        assert!(stage_atomic(&dest, &staging, b"new-exe").is_err());
+
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"old-exe",
+            "existing dest must survive a failed staging"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_failure_removes_staging_and_preserves_dest() {
+        let dir = scratch("rename-fail");
+        // Force the final rename to fail: dest is a non-empty directory.
+        let dest = dir.join("mnemark-update.exe");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("keep.txt"), b"x").unwrap();
+        let staging = dir.join("mnemark-update.staging");
+
+        assert!(stage_atomic(&dest, &staging, b"new-exe").is_err());
+
+        assert!(
+            !staging.exists(),
+            "staging file must be cleaned up on rename failure"
+        );
+        assert!(dest.join("keep.txt").exists(), "dest must be untouched");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

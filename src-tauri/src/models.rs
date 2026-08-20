@@ -7,8 +7,15 @@ use serde::{Deserialize, Serialize};
 pub struct Clip {
     pub id: String,
     pub kind: ClipKind,
-    /// Raw text content (text Clips) or semicolon-separated paths (FilePaths Clips)
+    /// Raw text content (Text Clips) or human-readable path list, CRLF-joined
+    /// (FilePaths Clips). For FilePaths this is display/fallback text only —
+    /// the canonical paths live in `file_paths`.
     pub text_content: Option<String>,
+    /// Canonical file paths (FilePaths Clips). Never delimiter-joined: a
+    /// filename may itself contain ';'. `None` for Text/Image Clips and for
+    /// legacy rows persisted before this field existed (those fall back to the
+    /// legacy ';'-split of `text_content`, which was always ambiguous).
+    pub file_paths: Option<Vec<String>>,
     /// Compressed image data (DIB format) for Image Clips.
     /// Never serialized: raw images must not cross the IPC bridge as JSON
     /// number arrays (10MB → ~30MB JSON). Paste fetches the bytes by id.
@@ -85,6 +92,8 @@ pub struct FavoriteItem {
     pub id: String,
     pub kind: ClipKind,
     pub text_content: Option<String>,
+    /// Canonical file paths (FilePaths snapshots); mirrors `Clip::file_paths`.
+    pub file_paths: Option<Vec<String>>,
     #[serde(skip_serializing)]
     pub image_data: Option<Vec<u8>>,
     pub thumbnail_base64: Option<String>,
@@ -109,6 +118,7 @@ impl FavoriteItem {
             id: self.id,
             kind: self.kind,
             text_content: self.text_content,
+            file_paths: self.file_paths,
             image_data: self.image_data,
             thumbnail_base64: self.thumbnail_base64,
             content_hash: self.content_hash,
@@ -132,6 +142,7 @@ impl From<Clip> for FavoriteItem {
             id: clip.content_hash.clone(),
             kind: clip.kind,
             text_content: clip.text_content,
+            file_paths: clip.file_paths,
             image_data: clip.image_data,
             thumbnail_base64: clip.thumbnail_base64,
             content_hash: clip.content_hash,
@@ -362,6 +373,7 @@ impl Clip {
             id: self.id.clone(),
             kind: self.kind.clone(),
             text_content: self.text_content.clone(),
+            file_paths: self.file_paths.clone(),
             image_data: None,
             thumbnail_base64: self.thumbnail_base64.clone(),
             content_hash: self.content_hash.clone(),
@@ -484,17 +496,17 @@ impl AppConfig {
 fn load_from(path: &std::path::Path) -> AppConfig {
     match std::fs::read_to_string(path) {
         Ok(s) => match serde_json::from_str::<AppConfig>(&s) {
-            Ok(cfg) => cfg,
+            Ok(cfg) => cfg.sanitized(),
             Err(e) => {
                 crate::log(&format!(
                     "[Mnemark] corrupt config; backing up and using defaults: {e}"
                 ));
                 preserve_corrupt_config(path);
-                AppConfig::default()
+                AppConfig::default().sanitized()
             }
         },
         Err(_) => {
-            let config = AppConfig::default();
+            let config = AppConfig::default().sanitized();
             if let Ok(json) = serde_json::to_string_pretty(&config) {
                 let _ = std::fs::write(path, json);
             }
@@ -912,6 +924,59 @@ mod atomic_config_tests {
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), "{ not valid json");
         // ...and the original path was moved aside, not silently overwritten.
         assert!(!path.exists());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_boundary_sanitizes_extreme_values_from_disk() {
+        // A hand-edited config with absurd values must come back clamped from
+        // the real load boundary (load_from), not just from sanitized().
+        let path = temp_path("extreme");
+        cleanup(&path);
+        let json = r#"{
+            "text_size_limit_kb": 0,
+            "text_count_limit": 999999,
+            "image_count_limit": 0,
+            "image_memory_budget_mb": 999999999,
+            "image_size_limit_mb": 9999,
+            "debounce_ms": 999999,
+            "ui_opacity_percent": 1
+        }"#;
+        std::fs::write(&path, json).unwrap();
+        let cfg = load_from(&path);
+        assert_eq!(cfg.text_size_limit_kb, 1);
+        assert_eq!(cfg.text_count_limit, 10_000);
+        assert_eq!(cfg.image_count_limit, 1);
+        assert_eq!(cfg.image_memory_budget_mb, 2_048);
+        assert_eq!(cfg.image_size_limit_mb, 256);
+        assert_eq!(cfg.debounce_ms, 10_000);
+        assert_eq!(cfg.ui_opacity_percent, 50);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_boundary_missing_file_writes_sanitized_default() {
+        let path = temp_path("missing");
+        cleanup(&path);
+        let cfg = load_from(&path);
+        // Defaults are in-range, but the boundary still applies sanitized().
+        let d = AppConfig::default();
+        assert_eq!(cfg.text_size_limit_kb, d.text_size_limit_kb);
+        assert_eq!(cfg.ui_opacity_percent, d.ui_opacity_percent);
+        assert!(path.exists());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_boundary_corrupt_file_returns_sanitized_defaults() {
+        let path = temp_path("corrupt-sanitized");
+        cleanup(&path);
+        std::fs::write(&path, "not json at all").unwrap();
+        let cfg = load_from(&path);
+        let d = AppConfig::default();
+        assert_eq!(cfg.text_count_limit, d.text_count_limit);
+        assert_eq!(cfg.debounce_ms, d.debounce_ms);
+        assert_eq!(cfg.ui_opacity_percent, d.ui_opacity_percent);
         cleanup(&path);
     }
 }

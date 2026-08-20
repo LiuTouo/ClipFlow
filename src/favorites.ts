@@ -13,6 +13,7 @@ import { computeMenuPlacement } from "./menu";
 import { DragController, rectContains, acceptDropSession, isAvailableDropTarget } from "./drag";
 import type { ItemDragPoint, ItemDragStart } from "./drag";
 import { insertBefore, moveOne } from "./reorder";
+import { createRenameController } from "./rename-commit";
 import type { CollectionSummary, FavoritesUiState } from "./types";
 
 interface AppConfig {
@@ -29,7 +30,14 @@ let selected: string | null = null;
 let matcher = new ShortcutMatcher(FAVORITES_DEFAULT_CODES);
 let moreMenuFor: string | null = null;
 let editingCreate = false;
-let renamingId: string | null = null;
+// Rename-editing flow lives in rename-commit.ts so the rejection path
+// (exit editing + re-render authoritative state) is unit-tested.
+const renameCtl = createRenameController({
+  rename: (id, name) => invoke("rename_collection", { id, name }),
+  reload: () => loadCollections(),
+  render: () => render(),
+  showError: (message) => showToast(message),
+});
 // Cross-window item drop state. move/end payloads carry their own locator, so
 // no start event is required; these track the newest session and the last
 // cancelled one so stale or aborted drags are rejected.
@@ -162,19 +170,19 @@ function render(): void {
     name.className = "favorites-row-name";
     name.textContent = c.name;
     name.title = c.name;
-    if (renamingId === c.id) {
+    if (renameCtl.editingId === c.id) {
       const editor = makeNameEditor({
         value: c.name,
         className: "favorites-rename-input",
         label: t("collectionNamePlaceholder"),
-        onCommit: (v) => commitRename(c.id, v),
-        onCancel: () => { renamingId = null; render(); },
+        onCommit: (v) => renameCtl.commit(c.id, v),
+        onCancel: () => renameCtl.cancel(),
       });
       row.append(handle, editor);
       editor.focus();
       selectAllContents(editor);
     } else {
-      name.addEventListener("dblclick", () => { renamingId = c.id; render(); });
+      name.addEventListener("dblclick", () => renameCtl.begin(c.id));
       row.append(handle, name);
     }
 
@@ -201,7 +209,7 @@ function render(): void {
     row.append(more);
 
     row.addEventListener("click", () => {
-      if (renamingId !== c.id) selectCollection(c.id);
+      if (renameCtl.editingId !== c.id) selectCollection(c.id);
     });
 
     listEl.append(row);
@@ -311,17 +319,6 @@ function cancelCreate(): void {
   render();
 }
 
-// === rename ===
-function commitRename(id: string, value: string): void {
-  if (renamingId !== id) return;
-  renamingId = null;
-  const name = value.trim();
-  if (!name) { render(); return; }
-  invoke("rename_collection", { id, name })
-    .then(() => loadCollections())
-    .catch((err) => showToast(String(err)));
-}
-
 // === more menu ===
 function toggleMoreMenu(id: string, anchor: HTMLElement): void {
   moreMenuFor = moreMenuFor === id ? null : id;
@@ -363,7 +360,7 @@ function updateMoreMenu(): void {
   if (!col) { moreMenu.classList.add("hidden"); return; }
   const index = collections.findIndex((c) => c.id === id);
 
-  const rename = menuItem(t("renameCollection"), () => { renamingId = id; moreMenuFor = null; render(); });
+  const rename = menuItem(t("renameCollection"), () => { moreMenuFor = null; renameCtl.begin(id); });
   const up = menuItem(t("moveUp"), () => moveCollection(id, -1), index === 0);
   const down = menuItem(t("moveDown"), () => moveCollection(id, 1), index === collections.length - 1);
   const remove = menuItem(t("remove"), () => openRemoveModal(col), false, true);

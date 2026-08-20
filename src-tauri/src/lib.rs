@@ -90,15 +90,20 @@ fn tray_labels(lang: &str) -> TrayLabels {
     }
 }
 
-/// Write-through to SQLite when persistence is enabled. Failures are
-/// logged (debug builds) but never block the in-memory operation.
-fn persist_with<F>(state: &AppState, f: F)
+/// Write-through to SQLite when persistence is enabled. The closure's Result
+/// propagates to the caller — a failed durable write must surface to the
+/// user, never be swallowed. Persistence disabled: pure in-memory success.
+/// Lock order: callers may hold the history/config locks across this — no
+/// code path takes the persistence lock and then a history/config lock, so
+/// the nesting cannot deadlock.
+fn persist_with<F>(state: &AppState, f: F) -> Result<(), String>
 where
-    F: FnOnce(&Persistence),
+    F: FnOnce(&mut Persistence) -> Result<(), String>,
 {
-    let guard = lock(&state.persistence);
-    if let Some(p) = guard.as_ref() {
-        f(p);
+    let mut guard = lock(&state.persistence);
+    match guard.as_mut() {
+        Some(p) => f(p),
+        None => Ok(()),
     }
 }
 
@@ -108,67 +113,89 @@ fn get_clips(state: tauri::State<AppState>) -> Vec<Clip> {
     history.get_all_for_ipc()
 }
 
-#[tauri::command]
-fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> {
-    // Scoped guards: never hold one state lock while acquiring another —
-    // keeps every command on the same lock order as undo_delete.
+fn delete_clip_impl(state: &AppState, id: &str) -> Result<(), String> {
+    // History is held across the DB write so the memory target and the
+    // durable row cannot drift apart mid-command. DB-first: the durable
+    // delete must succeed before memory (and the undo slot) change.
     let deleted = {
         let mut history = lock(&state.history);
-        history.delete(&id)
+        let Some(clip) = history.get_clip(id) else {
+            return Err("Clip not found".to_string());
+        };
+        persist_with(state, |p| p.delete(id))?;
+        let removed = history.delete(id);
+        debug_assert_eq!(removed.map(|c| c.id), Some(clip.id.clone()));
+        clip
     };
-    if let Some(clip) = deleted {
-        let clip_id = clip.id.clone();
-        *lock(&state.last_deleted) = Some(clip);
-        persist_with(&state, |p| {
-            let _ = p.delete(&clip_id);
-        });
-        Ok(())
-    } else {
-        Err("Clip not found".to_string())
+    *lock(&state.last_deleted) = Some(deleted);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_clip(id: String, state: tauri::State<AppState>) -> Result<(), String> {
+    delete_clip_impl(&state, &id)
+}
+
+fn undo_delete_impl(state: &AppState, id: &str) -> Result<Clip, String> {
+    // Undo is keyed to the deleted Clip's id: only the most recent delete is
+    // restorable, and a stale undo request (e.g. from an outdated toast)
+    // must not restore some other Clip. Peeked, not taken: the slot survives
+    // any DB failure below.
+    let clip = {
+        let last = lock(&state.last_deleted);
+        match last.as_ref() {
+            Some(c) if c.id == id => c.clone(),
+            _ => return Err("Nothing to undo".to_string()),
+        }
+    };
+    // History + config are held across preview → DB transaction → insert so
+    // the planned evictions and the applied ones are provably the same set
+    // (the parity is also pinned by the history.rs planner tests). Lock
+    // order history → config → persistence has no reverse path anywhere.
+    let restored = {
+        let mut history = lock(&state.history);
+        let config = lock(&state.config);
+        let evicted = history.preview_evictions(&clip, &config);
+        persist_with(state, |p| p.persist_capture_with_evictions(&clip, &evicted))?;
+        let (restored, applied) = history.insert(clip, &config);
+        debug_assert_eq!(applied, evicted);
+        restored
+    };
+    // The DB commit succeeded: only now consume the undo slot.
+    {
+        let mut last = lock(&state.last_deleted);
+        if last.as_ref().is_some_and(|c| c.id == id) {
+            last.take();
+        }
     }
+    Ok(restored)
 }
 
 #[tauri::command]
 fn undo_delete(id: String, state: tauri::State<AppState>) -> Result<Clip, String> {
-    let clip = {
-        let mut last = lock(&state.last_deleted);
-        // Undo is keyed to the deleted Clip's id: only the most recent delete
-        // is restorable, and a stale undo request (e.g. from an outdated
-        // toast) must not restore some other Clip.
-        if last.as_ref().is_some_and(|c| c.id == id) {
-            last.take()
-        } else {
-            None
-        }
-    };
-    if let Some(clip) = clip {
-        let (restored, evicted) = {
-            let mut history = lock(&state.history);
-            let config = lock(&state.config);
-            history.insert(clip, &config)
-        };
-        persist_with(&state, |p| {
-            let _ = p.upsert_capture(&restored);
-            for id in &evicted {
-                let _ = p.delete(id);
-            }
-        });
-        Ok(restored)
-    } else {
-        Err("Nothing to undo".to_string())
+    undo_delete_impl(&state, &id)
+}
+
+fn set_pinned_impl(state: &AppState, id: &str, pinned: bool) -> Result<(), String> {
+    // History is held across the DB write; on DB failure the memory flag is
+    // rolled back so memory state and the returned result always agree.
+    let mut history = lock(&state.history);
+    let old = history.get_clip(id).map(|c| c.pinned);
+    history.set_pinned(id, pinned)?; // validates pin limit + existence first
+    if let Err(e) = persist_with(state, |p| p.set_pinned(id, pinned)) {
+        // Rollback cannot hit the pin limit: pinning just occupied this
+        // clip's own slot, unpinning freed one.
+        history
+            .set_pinned(id, old.unwrap_or(pinned))
+            .map_err(|rollback| format!("{} (memory rollback failed: {})", e, rollback))?;
+        return Err(e);
     }
+    Ok(())
 }
 
 #[tauri::command]
 fn set_pinned(id: String, pinned: bool, state: tauri::State<AppState>) -> Result<(), String> {
-    {
-        let mut history = lock(&state.history);
-        history.set_pinned(&id, pinned)?;
-    }
-    persist_with(&state, |p| {
-        let _ = p.set_pinned(&id, pinned);
-    });
-    Ok(())
+    set_pinned_impl(&state, &id, pinned)
 }
 
 #[tauri::command]
@@ -424,18 +451,42 @@ fn copy_only_image(id: String, state: tauri::State<AppState>) -> Result<(), Stri
     clipboard::write_image_to_clipboard(&image_data)
 }
 
-/// Paste a FilePaths entry as real files (CF_HDROP). Returns "files" or
-/// "text" (all source files gone → path-text fallback).
+/// Resolve a FilePaths Clip's canonical paths (structured `file_paths` when
+/// present; legacy rows fall back to the ambiguous ';'-split of the stored
+/// text) and write them as CF_HDROP. Returns "files" or "text" (all source
+/// files gone → path-text fallback).
+fn write_clip_files(clip: &Clip) -> Result<String, String> {
+    let text = clip.text_content.as_deref().unwrap_or("");
+    let paths: Vec<String> = match &clip.file_paths {
+        Some(p) => p.clone(),
+        None => clipboard::split_legacy_file_text(text),
+    };
+    clipboard::write_files_to_clipboard_from_paths(&paths, text)
+}
+
+/// Paste a FilePaths history entry as real files (CF_HDROP), resolving the
+/// canonical paths from backend state by clip id — the frontend never sends
+/// path text for the backend to split.
 #[tauri::command]
-async fn paste_files(app: tauri::AppHandle, text: String) -> Result<String, String> {
-    let outcome = clipboard::write_files_to_clipboard_from_text(&text)?;
+async fn paste_files(
+    app: tauri::AppHandle,
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let clip = lock(&state.history)
+        .get_clip(&id)
+        .ok_or_else(|| "Clip not found".to_string())?;
+    let outcome = write_clip_files(&clip)?;
     hide_and_paste(&app).await;
     Ok(outcome)
 }
 
 #[tauri::command]
-fn copy_only_files(text: String) -> Result<String, String> {
-    clipboard::write_files_to_clipboard_from_text(&text)
+fn copy_only_files(id: String, state: tauri::State<AppState>) -> Result<String, String> {
+    let clip = lock(&state.history)
+        .get_clip(&id)
+        .ok_or_else(|| "Clip not found".to_string())?;
+    write_clip_files(&clip)
 }
 
 // === Favorites ===
@@ -618,11 +669,10 @@ async fn paste_favorite(
             String::new()
         }
         ClipKind::FilePaths => {
-            let text = clip.text_content.as_deref().unwrap_or("");
             if lock(&state.config).paste_files_as_files {
-                clipboard::write_files_to_clipboard_from_text(text)?
+                write_clip_files(&clip)?
             } else {
-                clipboard::write_text_to_clipboard(text)?;
+                clipboard::write_text_to_clipboard(clip.text_content.as_deref().unwrap_or(""))?;
                 String::new()
             }
         }
@@ -645,11 +695,10 @@ fn copy_favorite(id: String, state: tauri::State<AppState>) -> Result<String, St
             Ok(String::new())
         }
         ClipKind::FilePaths => {
-            let text = clip.text_content.as_deref().unwrap_or("");
             if lock(&state.config).paste_files_as_files {
-                clipboard::write_files_to_clipboard_from_text(text)
+                write_clip_files(&clip)
             } else {
-                clipboard::write_text_to_clipboard(text)?;
+                clipboard::write_text_to_clipboard(clip.text_content.as_deref().unwrap_or(""))?;
                 Ok(String::new())
             }
         }
@@ -935,10 +984,9 @@ impl Monitor {
 
         let config = lock(&self.config).clone();
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        // now_ms maps a pre-epoch clock to 0 instead of panicking — a panic
+        // here would kill the monitor thread and stop all capture.
+        let now = now_ms();
 
         let (pending_seq, pending_since, first_seen) =
             track_first_seen(self.pending_seq, self.pending_since, current_seq, now);
@@ -987,11 +1035,18 @@ impl Monitor {
                     history.insert(clip, &config)
                 };
                 {
-                    let guard = lock(&self.persistence);
-                    if let Some(p) = guard.as_ref() {
-                        let _ = p.upsert_capture(&clip);
-                        for id in &evicted {
-                            let _ = p.delete(id);
+                    let mut guard = lock(&self.persistence);
+                    if let Some(p) = guard.as_mut() {
+                        if let Err(e) = p.persist_capture_with_evictions(&clip, &evicted) {
+                            // The monitor cannot surface a UI error. Minimal
+                            // observable strategy within the existing
+                            // architecture: unconditional stderr (visible
+                            // whenever the app runs with a console, release
+                            // included) plus a broadcast event; the iteration
+                            // always continues — clipboard capture must never
+                            // die on a DB error.
+                            eprintln!("[Mnemark] history persistence write failed: {}", e);
+                            let _ = self.app.emit("history-persistence-error", &e);
                         }
                     }
                 }
@@ -2016,19 +2071,42 @@ fn open_settings_window(app: &tauri::AppHandle) -> Result<(), tauri::Error> {
 
     log("[Mnemark] open_settings_window() called");
     if let Some(window) = app.get_webview_window("settings") {
-        log("[Mnemark] settings exists, focusing");
+        if window.is_visible().unwrap_or(false) {
+            log("[Mnemark] settings exists, focusing");
+            window.set_focus()?;
+            return Ok(());
+        }
+        log("[Mnemark] settings exists, showing");
+        let _ = window.center();
+        window.show()?;
         window.set_focus()?;
+        // Tell the (reused) frontend this is a fresh session so it reloads
+        // the saved config and clears dirty/recording state.
+        let _ = app.emit("settings-reopened", ());
         return Ok(());
     }
 
     log("[Mnemark] creating settings window");
-    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+    let w = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Mnemark Settings")
         .inner_size(500.0, 700.0)
         .resizable(false)
         .visible(true)
         .center()
         .build()?;
+
+    let app_handle = app.clone();
+    w.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            // Never destroy: hide instead, so repeated open/close does not
+            // rebuild the WebView each time (a long-running risk on Windows).
+            // Save/Cancel/Escape/title-bar all route through CloseRequested.
+            api.prevent_close();
+            if let Some(window) = app_handle.get_webview_window("settings") {
+                let _ = window.hide();
+            }
+        }
+    });
 
     log("[Mnemark] settings window created");
     Ok(())
@@ -2300,6 +2378,15 @@ mod monitor_debounce_tests {
         assert_eq!(seq, Some(7));
         assert_eq!(since, Some(1000));
         assert_eq!(first, 1000);
+    }
+
+    #[test]
+    fn now_ms_never_panics_and_returns_epoch_scale() {
+        // The monitor's clock: a pre-epoch system clock maps to 0 (fallback)
+        // instead of panicking inside duration_since().unwrap(), which would
+        // kill the monitor thread. On any real test machine this is ~2026.
+        let now = super::now_ms();
+        assert!(now > 1_000_000_000_000, "now_ms should be post-2001 ms");
     }
 }
 
@@ -2612,5 +2699,270 @@ mod sidebar_placement_tests {
         // panel_top = 730; only 70px to work bottom.
         assert_eq!(p.y, 730);
         assert_eq!(p.height, 70);
+    }
+}
+
+/// User-command consistency under injected persistence failures: a command
+/// must never report success without the durable write, nor fail while
+/// leaving memory/undo state saying otherwise.
+#[cfg(test)]
+mod persistence_consistency_tests {
+    use super::*;
+    use crate::models::{AppConfig, Clip, ClipKind, FavoritesUiState};
+    use crate::persistence::Persistence;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::{Arc, Mutex};
+
+    fn clip(id: &str, captured_at: u64) -> Clip {
+        Clip {
+            id: id.to_string(),
+            kind: ClipKind::Text,
+            text_content: Some(format!("content-{id}")),
+            file_paths: None,
+            image_data: None,
+            thumbnail_base64: None,
+            content_hash: format!("hash-{id}"),
+            preview: id.to_string(),
+            truncated: false,
+            source_exe: "test.exe".to_string(),
+            source_title: String::new(),
+            source_icon: None,
+            captured_at,
+            pinned: false,
+            byte_size: 10,
+        }
+    }
+
+    fn app_state(persistence: Option<Persistence>, config: AppConfig) -> AppState {
+        AppState {
+            history: Arc::new(Mutex::new(HistoryStore::new())),
+            config: Arc::new(Mutex::new(config)),
+            monitor_running: Arc::new(Mutex::new(true)),
+            last_deleted: Arc::new(Mutex::new(None)),
+            persistence: Arc::new(Mutex::new(persistence)),
+            tray_items: Arc::new(Mutex::new(None)),
+            startup_error: Arc::new(Mutex::new(None)),
+            preview: Arc::new(Mutex::new(None)),
+            preview_generation: Arc::new(AtomicU64::new(0)),
+            favorites: Arc::new(Mutex::new(None)),
+            favorites_ui: Arc::new(Mutex::new(FavoritesUiState {
+                open: false,
+                selected_collection: None,
+            })),
+        }
+    }
+
+    fn db_ids(state: &AppState) -> Vec<String> {
+        let guard = lock(&state.persistence);
+        let mut ids: Vec<String> = guard
+            .as_ref()
+            .unwrap()
+            .load_all()
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn memory_ids(state: &AppState) -> Vec<String> {
+        let mut ids: Vec<String> = lock(&state.history)
+            .clips
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn delete_clip_db_failure_keeps_memory_and_undo_intact() {
+        let state = app_state(Some(Persistence::broken_for_test()), AppConfig::default());
+        lock(&state.history).insert(clip("c1", 1), &AppConfig::default());
+
+        assert!(delete_clip_impl(&state, "c1").is_err());
+        assert_eq!(memory_ids(&state), vec!["c1".to_string()]);
+        assert!(lock(&state.last_deleted).is_none());
+    }
+
+    #[test]
+    fn delete_clip_success_updates_memory_undo_and_db() {
+        let state = app_state(
+            Some(Persistence::in_memory_for_test()),
+            AppConfig::default(),
+        );
+        let cfg = AppConfig::default();
+        lock(&state.history).insert(clip("c1", 1), &cfg);
+        lock(&state.persistence)
+            .as_mut()
+            .unwrap()
+            .persist_capture_with_evictions(&clip("c1", 1), &[])
+            .unwrap();
+
+        delete_clip_impl(&state, "c1").unwrap();
+        assert!(memory_ids(&state).is_empty());
+        assert!(lock(&state.last_deleted)
+            .as_ref()
+            .is_some_and(|c| c.id == "c1"));
+        assert!(db_ids(&state).is_empty());
+    }
+
+    #[test]
+    fn delete_clip_missing_id_errors_without_side_effects() {
+        let state = app_state(
+            Some(Persistence::in_memory_for_test()),
+            AppConfig::default(),
+        );
+        assert_eq!(
+            delete_clip_impl(&state, "nope").unwrap_err(),
+            "Clip not found"
+        );
+        assert!(lock(&state.last_deleted).is_none());
+    }
+
+    #[test]
+    fn set_pinned_db_failure_rolls_back_memory() {
+        let state = app_state(Some(Persistence::broken_for_test()), AppConfig::default());
+        let cfg = AppConfig::default();
+        lock(&state.history).insert(clip("c1", 1), &cfg);
+
+        assert!(set_pinned_impl(&state, "c1", true).is_err());
+        assert!(!lock(&state.history).get_clip("c1").unwrap().pinned);
+    }
+
+    #[test]
+    fn set_pinned_success_updates_memory_and_db() {
+        let state = app_state(
+            Some(Persistence::in_memory_for_test()),
+            AppConfig::default(),
+        );
+        let cfg = AppConfig::default();
+        lock(&state.history).insert(clip("c1", 1), &cfg);
+        lock(&state.persistence)
+            .as_mut()
+            .unwrap()
+            .persist_capture_with_evictions(&clip("c1", 1), &[])
+            .unwrap();
+
+        set_pinned_impl(&state, "c1", true).unwrap();
+        assert!(lock(&state.history).get_clip("c1").unwrap().pinned);
+        assert!(
+            lock(&state.persistence)
+                .as_ref()
+                .unwrap()
+                .load_all()
+                .unwrap()[0]
+                .pinned
+        );
+    }
+
+    #[test]
+    fn set_pinned_pin_limit_rejected_before_db() {
+        let state = app_state(
+            Some(Persistence::in_memory_for_test()),
+            AppConfig {
+                text_count_limit: 20,
+                ..AppConfig::default()
+            },
+        );
+        let cfg = {
+            let c = lock(&state.config);
+            c.clone()
+        };
+        for i in 1..=11 {
+            lock(&state.history).insert(clip(&format!("p{i}"), i as u64), &cfg);
+        }
+        for i in 1..=10 {
+            set_pinned_impl(&state, &format!("p{i}"), true).unwrap();
+        }
+        // The 11th pin exceeds the limit and must be rejected by the memory
+        // validation — before any DB write happens.
+        assert_eq!(
+            set_pinned_impl(&state, "p11", true).unwrap_err(),
+            "Maximum 10 pinned Clips"
+        );
+        assert!(!lock(&state.history).get_clip("p11").unwrap().pinned);
+    }
+
+    #[test]
+    fn undo_delete_db_failure_preserves_last_deleted_and_history() {
+        // Healthy delete, then the DB breaks: undo must fail atomically.
+        let state = app_state(
+            Some(Persistence::in_memory_for_test()),
+            AppConfig::default(),
+        );
+        let cfg = AppConfig::default();
+        lock(&state.history).insert(clip("c1", 1), &cfg);
+        delete_clip_impl(&state, "c1").unwrap();
+        *lock(&state.persistence) = Some(Persistence::broken_for_test());
+
+        assert!(undo_delete_impl(&state, "c1").is_err());
+        assert!(lock(&state.last_deleted)
+            .as_ref()
+            .is_some_and(|c| c.id == "c1"));
+        assert!(
+            memory_ids(&state).is_empty(),
+            "history untouched by failed undo"
+        );
+    }
+
+    #[test]
+    fn undo_delete_success_is_atomic_with_evictions() {
+        // capacity 1: restoring c1 must evict c2 in memory AND in the DB,
+        // in one transaction.
+        let state = app_state(
+            Some(Persistence::in_memory_for_test()),
+            AppConfig {
+                text_count_limit: 1,
+                ..AppConfig::default()
+            },
+        );
+        let cfg = {
+            let c = lock(&state.config);
+            c.clone()
+        };
+        // c1 is newer than c2 so the capacity-1 restore evicts c2, not the
+        // restored clip itself (eviction goes by true age).
+        lock(&state.history).insert(clip("c1", 3), &cfg);
+        delete_clip_impl(&state, "c1").unwrap();
+        lock(&state.history).insert(clip("c2", 2), &cfg);
+        lock(&state.persistence)
+            .as_mut()
+            .unwrap()
+            .persist_capture_with_evictions(&clip("c2", 2), &[])
+            .unwrap();
+
+        let restored = undo_delete_impl(&state, "c1").unwrap();
+        assert_eq!(restored.id, "c1");
+        assert_eq!(memory_ids(&state), vec!["c1".to_string()]);
+        assert_eq!(db_ids(&state), vec!["c1".to_string()]);
+        assert!(lock(&state.last_deleted).is_none());
+    }
+
+    #[test]
+    fn undo_delete_stale_id_rejected() {
+        let state = app_state(
+            Some(Persistence::in_memory_for_test()),
+            AppConfig::default(),
+        );
+        assert_eq!(
+            undo_delete_impl(&state, "anything").unwrap_err(),
+            "Nothing to undo"
+        );
+    }
+
+    #[test]
+    fn disabled_persistence_keeps_pure_memory_success() {
+        let state = app_state(None, AppConfig::default());
+        let cfg = AppConfig::default();
+        lock(&state.history).insert(clip("c1", 1), &cfg);
+
+        delete_clip_impl(&state, "c1").unwrap();
+        assert!(lock(&state.last_deleted).is_some());
+        undo_delete_impl(&state, "c1").unwrap();
+        assert_eq!(memory_ids(&state), vec!["c1".to_string()]);
+        set_pinned_impl(&state, "c1", true).unwrap();
+        assert!(lock(&state.history).get_clip("c1").unwrap().pinned);
     }
 }

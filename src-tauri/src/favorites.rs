@@ -48,7 +48,31 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_memberships_item ON memberships(item_id);",
     )
-    .map_err(|e| format!("Failed to initialize favorites schema: {}", e))
+    .map_err(|e| format!("Failed to initialize favorites schema: {}", e))?;
+    // Idempotent migration for DBs created before structured file paths:
+    // ALTER only when schema introspection says the column is missing —
+    // never by matching on the ALTER error string.
+    if !column_exists(conn, "favorite_items", "file_paths_json")? {
+        conn.execute(
+            "ALTER TABLE favorite_items ADD COLUMN file_paths_json TEXT",
+            [],
+        )
+        .map_err(|e| format!("Failed to migrate favorite_items schema: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Does `table` have a `column`? Schema introspection via PRAGMA table_info.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let sql = format!(
+        "SELECT 1 FROM pragma_table_info('{}') WHERE name = ?1",
+        table
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to inspect {} schema: {}", table, e))?;
+    stmt.exists(params![column])
+        .map_err(|e| format!("Failed to inspect {} schema: {}", table, e))
 }
 
 /// Trim a collection name and validate 1..=64 Unicode scalar values.
@@ -117,11 +141,21 @@ fn compact_sort_orders(conn: &Connection) -> Result<(), String> {
 /// Insert-or-refresh one snapshot, deduped by content hash so the same content
 /// is shared across every collection that references it.
 fn upsert_favorite_item(conn: &Connection, item: &FavoriteItem) -> Result<(), String> {
+    // Serialization failure must propagate, never silently drop the canonical
+    // file paths to NULL.
+    let file_paths_json = item
+        .file_paths
+        .as_ref()
+        .map(|p| {
+            serde_json::to_string(p).map_err(|e| format!("Failed to serialize file paths: {}", e))
+        })
+        .transpose()?;
     conn.execute(
         "INSERT INTO favorite_items (content_hash, kind, text_content, image_data,
                                      thumbnail_base64, preview, truncated, source_exe,
-                                     source_title, source_icon, captured_at, byte_size)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                                     source_title, source_icon, captured_at, byte_size,
+                                     file_paths_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(content_hash) DO UPDATE SET
             kind = excluded.kind,
             text_content = excluded.text_content,
@@ -133,7 +167,8 @@ fn upsert_favorite_item(conn: &Connection, item: &FavoriteItem) -> Result<(), St
             source_title = excluded.source_title,
             source_icon = excluded.source_icon,
             captured_at = excluded.captured_at,
-            byte_size = excluded.byte_size",
+            byte_size = excluded.byte_size,
+            file_paths_json = excluded.file_paths_json",
         params![
             item.content_hash,
             kind_str(&item.kind),
@@ -147,6 +182,7 @@ fn upsert_favorite_item(conn: &Connection, item: &FavoriteItem) -> Result<(), St
             item.source_icon,
             item.captured_at as i64,
             item.byte_size as i64,
+            file_paths_json,
         ],
     )
     .map_err(|e| format!("Failed to persist favorite: {}", e))?;
@@ -155,10 +191,14 @@ fn upsert_favorite_item(conn: &Connection, item: &FavoriteItem) -> Result<(), St
 
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<FavoriteItem> {
     let content_hash: String = row.get(0)?;
+    // Corrupt JSON degrades to None (legacy fallback); never panics.
+    let file_paths_json: Option<String> = row.get(12)?;
+    let file_paths = file_paths_json.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
     Ok(FavoriteItem {
         id: content_hash.clone(),
         kind: kind_from_str(&row.get::<_, String>(1)?),
         text_content: row.get(2)?,
+        file_paths,
         image_data: row.get(3)?,
         thumbnail_base64: row.get(4)?,
         content_hash,
@@ -173,16 +213,17 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<FavoriteItem> {
     })
 }
 
-/// Like `row_to_item`, but reads the membership `added_at` from column 12 (the
+/// Like `row_to_item`, but reads the membership `added_at` from column 13 (the
 /// extra column selected by `list_items`).
 fn row_to_item_with_added(row: &rusqlite::Row<'_>) -> rusqlite::Result<FavoriteItem> {
     let mut item = row_to_item(row)?;
-    item.added_at = Some(row.get::<_, i64>(12)? as u64);
+    item.added_at = Some(row.get::<_, i64>(13)? as u64);
     Ok(item)
 }
 
 const ITEM_COLS: &str = "content_hash, kind, text_content, image_data, thumbnail_base64,
-        preview, truncated, source_exe, source_title, source_icon, captured_at, byte_size";
+        preview, truncated, source_exe, source_title, source_icon, captured_at, byte_size,
+        file_paths_json";
 
 impl FavoritesStore {
     /// Open (creating if necessary) the favorites tables in `mnemark.db`.
@@ -512,6 +553,7 @@ mod tests {
             id: id.to_string(),
             kind,
             text_content: Some(format!("content-{id}")),
+            file_paths: None,
             image_data: if is_image {
                 Some(vec![1u8, 2, 3, 4])
             } else {
@@ -555,6 +597,72 @@ mod tests {
         let loaded = store.get_item("img-hash").unwrap().unwrap();
         assert_eq!(loaded.image_data.as_deref(), Some(&[1u8, 2, 3, 4][..]));
         assert_eq!(loaded.kind, ClipKind::Image);
+    }
+
+    #[test]
+    fn file_paths_round_trip_exactly_through_snapshot() {
+        let mut store = test_store();
+        let c = store.create_collection("Files").unwrap();
+        let mut src = clip("f1", ClipKind::FilePaths, "files-hash");
+        src.file_paths = Some(vec![
+            "C:\\tmp\\a;b.txt".to_string(),
+            "C:\\tmp\\空白 名稱.pdf".to_string(),
+        ]);
+        store.add_favorite(&c.id, &FavoriteItem::from(src)).unwrap();
+
+        let loaded = store.get_item("files-hash").unwrap().unwrap();
+        assert_eq!(
+            loaded.file_paths.as_deref(),
+            Some(
+                &[
+                    "C:\\tmp\\a;b.txt".to_string(),
+                    "C:\\tmp\\空白 名稱.pdf".to_string()
+                ][..]
+            )
+        );
+        // list_items (the added_at path) reads the same column set.
+        let listed = store.list_items(&c.id).unwrap();
+        assert_eq!(listed[0].file_paths, loaded.file_paths);
+    }
+
+    #[test]
+    fn init_schema_twice_consecutively_succeeds() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Second init on an already-migrated schema must not error.
+        init_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn old_schema_favorite_rows_without_file_paths_load() {
+        // Pre-migration DB shape: no file_paths_json column.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE collections (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
+                sort_order INTEGER NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE favorite_items (
+                content_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, text_content TEXT,
+                image_data BLOB, thumbnail_base64 TEXT, preview TEXT NOT NULL,
+                truncated INTEGER NOT NULL, source_exe TEXT NOT NULL, source_title TEXT NOT NULL,
+                source_icon TEXT, captured_at INTEGER NOT NULL, byte_size INTEGER NOT NULL);
+             CREATE TABLE memberships (
+                collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                item_id TEXT NOT NULL REFERENCES favorite_items(content_hash) ON DELETE CASCADE,
+                added_at INTEGER NOT NULL, PRIMARY KEY (collection_id, item_id));
+             INSERT INTO collections VALUES ('c1', 'Old', 'old', 0, 1);
+             INSERT INTO favorite_items VALUES ('old-hash', 'FilePaths', 'C:\\x.txt', NULL,
+                NULL, 'old', 0, 'x.exe', '', NULL, 1, 10);
+             INSERT INTO memberships VALUES ('c1', 'old-hash', 5);",
+        )
+        .unwrap();
+        let store = FavoritesStore::from_conn(conn); // from_conn runs init_schema (migrates)
+        let item = store.get_item("old-hash").unwrap().unwrap();
+        assert_eq!(item.file_paths, None); // legacy NULL → fallback
+        assert_eq!(item.text_content.as_deref(), Some("C:\\x.txt"));
+        let listed = store.list_items("c1").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].added_at, Some(5));
     }
 
     #[test]

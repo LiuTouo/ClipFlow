@@ -8,6 +8,8 @@ export interface Clip {
   id: string;
   kind: ClipKind;
   text_content: string | null;
+  /** Canonical file paths (FilePaths clips). Null for legacy rows. */
+  file_paths: string[] | null;
   thumbnail_base64: string | null;
   content_hash: string;
   preview: string;
@@ -25,6 +27,8 @@ export interface FavoriteItem {
   id: string;
   kind: ClipKind;
   text_content: string | null;
+  /** Canonical file paths (FilePaths snapshots). Null for legacy rows. */
+  file_paths: string[] | null;
   thumbnail_base64: string | null;
   content_hash: string;
   preview: string;

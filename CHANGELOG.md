@@ -4,6 +4,25 @@
 
 格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)，版本號遵循[語意化版本](https://semver.org/lang/zh-TW/)。
 
+## [0.6.7] - 2026-08-20
+
+### Changed
+
+- 檔案剪貼簿內容改以結構化路徑陣列儲存，並自動遷移既有歷史與抽屜資料
+- portable 更新改為同目錄暫存、同步寫入後原子替換，避免下載或寫入失敗破壞既有執行檔
+
+### Fixed
+
+- 修正長時間執行後設定視窗可能無法再次開啟，並確保重開時重新載入最新設定
+- 修正異常設定值未在載入邊界正規化，可能造成限制、透明度或 debounce 行為失效
+- 修正檔名包含分號時檔案路徑被錯誤拆分，以及歷史與抽屜資料無法無損還原
+- 修正輸入欄位取得焦點時 Space 仍可能觸發預覽
+- 修正歷史刪除、釘選、復原與監控寫入的持久化錯誤遭忽略，導致記憶體與 SQLite 狀態不一致
+- 修正 Windows clipboard 寫入時未檢查 `GlobalLock`，可能因空指標造成程序終止
+- 修正抽屜重新命名失敗後仍停留在編輯介面
+- 修正系統時間早於 Unix epoch 時監控執行緒可能 panic
+- 修正 Windows plain `cargo test` 因缺少 Common Controls v6 manifest 而無法啟動測試程式
+
 ## [0.6.6] - 2026-08-19
 
 ### Changed
@@ -325,6 +344,7 @@
 
 - 初始版本：剪貼簿監聽（文字／圖片／檔案路徑）、SHA-256 內容去重、容量限制與淘汰、釘選（上限 10 則、永不淘汰）、即時搜尋、Raycast 風格浮動面板（`Ctrl+Shift+V`）、貼上模擬、刪除復原、系統匣常駐、排除清單、深淺色主題跟隨系統、免安裝可攜（設定存於 exe 旁）
 
+[0.6.7]: https://github.com/LiuTouo/Mnemark/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/LiuTouo/Mnemark/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/LiuTouo/Mnemark/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/LiuTouo/Mnemark/compare/v0.6.3...v0.6.4

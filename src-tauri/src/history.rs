@@ -47,67 +47,101 @@ impl HistoryStore {
         }
     }
 
-    /// Index of the oldest (smallest `captured_at`) unpinned Clip matching
-    /// `pred`. Eviction must go by true age, not vec position: new Clips are
-    /// pushed to the back of the vec, so evicting from the back would discard
-    /// the fresh Clip and keep the oldest one forever.
-    fn oldest_unpinned(clips: &[Clip], pred: impl Fn(&Clip) -> bool) -> Option<usize> {
-        clips
+    /// Evict over-limit Clips (oldest unpinned first). Returns evicted ids.
+    /// Eviction goes by true age, not vec position: new Clips are pushed to
+    /// the back of the vec, so evicting from the back would discard the fresh
+    /// Clip and keep the oldest one forever.
+    fn enforce_limits(&mut self, config: &AppConfig) -> Vec<String> {
+        let refs: Vec<&Clip> = self.clips.iter().collect();
+        let victims = Self::plan_evictions(&refs, config);
+        let evicted = victims
             .iter()
-            .enumerate()
-            .filter(|(_, c)| pred(c) && !c.pinned)
-            .min_by_key(|(_, c)| c.captured_at)
-            .map(|(i, _)| i)
+            .map(|&i| self.clips[i].id.clone())
+            .collect::<Vec<_>>();
+        for &i in victims.iter().rev() {
+            self.clips.remove(i);
+        }
+        evicted
     }
 
-    /// Evict over-limit Clips (oldest unpinned first). Returns evicted ids.
-    fn enforce_limits(&mut self, config: &AppConfig) -> Vec<String> {
-        let mut evicted = Vec::new();
+    /// Indices (into `clips`, which includes the just-pushed candidate at the
+    /// end) of the Clips to evict under `config`, oldest unpinned first —
+    /// non-image Clips by count, then image Clips by count + byte budget.
+    /// Pure: no mutation, so `insert` and `preview_evictions` both route
+    /// through it and can never drift apart.
+    fn plan_evictions(clips: &[&Clip], config: &AppConfig) -> Vec<usize> {
+        let mut victims: Vec<usize> = Vec::new();
 
-        // Evict oldest unpinned non-image Clips
+        // Evict oldest unpinned non-image Clips by count
         loop {
-            let text_count = self
-                .clips
+            let text_count = clips
                 .iter()
-                .filter(|c| c.kind != ClipKind::Image)
+                .enumerate()
+                .filter(|(i, c)| !victims.contains(i) && c.kind != ClipKind::Image)
                 .count();
             if text_count <= config.text_count_limit {
                 break;
             }
-            let idx = Self::oldest_unpinned(&self.clips, |c| c.kind != ClipKind::Image);
-            if let Some(i) = idx {
-                evicted.push(self.clips.remove(i).id);
-            } else {
-                break;
+            let idx = clips
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| !victims.contains(i) && c.kind != ClipKind::Image && !c.pinned)
+                .min_by_key(|(_, c)| c.captured_at)
+                .map(|(i, _)| i);
+            match idx {
+                Some(i) => victims.push(i),
+                None => break,
             }
         }
 
         // Evict oldest unpinned image Clips by count + memory
         let image_memory_limit = config.image_memory_budget_mb * 1024 * 1024;
         loop {
-            let image_count = self
-                .clips
+            let images: Vec<(usize, u64)> = clips
                 .iter()
-                .filter(|c| c.kind == ClipKind::Image)
-                .count();
-            let image_memory: u64 = self
-                .clips
-                .iter()
-                .filter(|c| c.kind == ClipKind::Image)
-                .map(|c| c.byte_size)
-                .sum();
+                .enumerate()
+                .filter(|(i, c)| !victims.contains(i) && c.kind == ClipKind::Image)
+                .map(|(i, c)| (i, c.byte_size))
+                .collect();
+            let image_count = images.len();
+            let image_memory: u64 = images.iter().map(|(_, b)| *b).sum();
             if image_count <= config.image_count_limit && image_memory <= image_memory_limit {
                 break;
             }
-            let idx = Self::oldest_unpinned(&self.clips, |c| c.kind == ClipKind::Image);
-            if let Some(i) = idx {
-                evicted.push(self.clips.remove(i).id);
-            } else {
-                break;
+            let idx = clips
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| !victims.contains(i) && c.kind == ClipKind::Image && !c.pinned)
+                .min_by_key(|(_, c)| c.captured_at)
+                .map(|(i, _)| i);
+            match idx {
+                Some(i) => victims.push(i),
+                None => break,
             }
         }
 
-        evicted
+        victims
+    }
+
+    /// Ids an `insert` of `clip` would evict, computed without mutating the
+    /// store. Parity with `insert` is exact by construction: both run the
+    /// same planner over the same clip set — `insert` after pushing the
+    /// candidate, this over the current Clips plus the candidate. A
+    /// content-hash dedup hit evicts nothing in both paths.
+    pub fn preview_evictions(&self, clip: &Clip, config: &AppConfig) -> Vec<String> {
+        if self
+            .clips
+            .iter()
+            .any(|c| c.content_hash == clip.content_hash)
+        {
+            return Vec::new();
+        }
+        let mut refs: Vec<&Clip> = self.clips.iter().collect();
+        refs.push(clip);
+        Self::plan_evictions(&refs, config)
+            .iter()
+            .map(|&i| refs[i].id.clone())
+            .collect()
     }
 
     pub fn get_all(&self) -> Vec<Clip> {
@@ -196,6 +230,7 @@ mod tests {
             id: id.to_string(),
             kind,
             text_content: None,
+            file_paths: None,
             image_data: None,
             thumbnail_base64: None,
             content_hash: format!("hash-{id}"),
@@ -313,5 +348,109 @@ mod tests {
         assert_eq!(evicted, vec!["i2".to_string()]);
         assert_eq!(h.clips.len(), 1);
         assert_eq!(h.clips[0].id, "i3");
+    }
+
+    /// preview_evictions must equal what insert actually evicts — the undo
+    /// DB-first path plans its transaction from the preview, so any drift
+    /// would desync SQLite from memory. Table-driven across every limit kind.
+    #[test]
+    fn preview_evictions_matches_insert_across_all_limit_kinds() {
+        struct Case {
+            name: &'static str,
+            config: AppConfig,
+            // (id, kind, captured_at, byte_size, pinned) rows pre-seeded.
+            seed: Vec<(&'static str, ClipKind, u64, u64, bool)>,
+            candidate: (&'static str, ClipKind, u64, u64),
+        }
+        let cases = vec![
+            Case {
+                name: "text count limit",
+                config: AppConfig {
+                    text_count_limit: 2,
+                    ..AppConfig::default()
+                },
+                seed: vec![
+                    ("c1", ClipKind::Text, 1, 1, false),
+                    ("c2", ClipKind::Text, 2, 1, false),
+                ],
+                candidate: ("c3", ClipKind::Text, 3, 1),
+            },
+            Case {
+                name: "image count limit",
+                config: AppConfig {
+                    image_count_limit: 1,
+                    ..AppConfig::default()
+                },
+                seed: vec![("i1", ClipKind::Image, 1, 10, false)],
+                candidate: ("i2", ClipKind::Image, 2, 10),
+            },
+            Case {
+                name: "image byte budget",
+                config: AppConfig {
+                    image_memory_budget_mb: 1,
+                    ..AppConfig::default()
+                },
+                seed: vec![("i1", ClipKind::Image, 1, 600_000, false)],
+                candidate: ("i2", ClipKind::Image, 2, 600_000),
+            },
+            Case {
+                name: "pinned exempt from eviction",
+                config: AppConfig {
+                    text_count_limit: 2,
+                    ..AppConfig::default()
+                },
+                seed: vec![
+                    ("c1", ClipKind::Text, 1, 1, true),
+                    ("c2", ClipKind::Text, 2, 1, false),
+                ],
+                candidate: ("c3", ClipKind::Text, 3, 1),
+            },
+            Case {
+                name: "combined text and image limits",
+                config: AppConfig {
+                    text_count_limit: 1,
+                    image_count_limit: 1,
+                    ..AppConfig::default()
+                },
+                seed: vec![
+                    ("c1", ClipKind::Text, 1, 1, false),
+                    ("i1", ClipKind::Image, 2, 100, false),
+                ],
+                candidate: ("c2", ClipKind::Text, 3, 1),
+            },
+            Case {
+                name: "no limits hit",
+                config: AppConfig::default(),
+                seed: vec![("c1", ClipKind::Text, 1, 1, false)],
+                candidate: ("c2", ClipKind::Text, 2, 1),
+            },
+        ];
+        for case in cases {
+            let cfg = case.config;
+            let mut seeded = HistoryStore::new();
+            for (id, kind, at, size, pinned) in &case.seed {
+                let mut c = clip(id, kind.clone(), *at, *size);
+                c.pinned = *pinned;
+                seeded.insert(c, &cfg);
+            }
+            let (cid, ckind, cat, csize) = case.candidate;
+            let candidate = clip(cid, ckind, cat, csize);
+
+            let preview = seeded.preview_evictions(&candidate, &cfg);
+            let (_, applied) = seeded.insert(candidate, &cfg);
+            assert_eq!(preview, applied, "parity failed: {}", case.name);
+        }
+    }
+
+    #[test]
+    fn preview_evictions_empty_on_content_hash_dedup() {
+        let cfg = AppConfig::default();
+        let mut h = HistoryStore::new();
+        let c1 = text_clip("c1", 1);
+        h.insert(c1.clone(), &cfg);
+        // Same content hash, different id: insert takes the dedup path.
+        let mut dup = text_clip("other-id", 2);
+        dup.content_hash = c1.content_hash.clone();
+        assert!(h.preview_evictions(&dup, &cfg).is_empty());
     }
 }
