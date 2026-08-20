@@ -1,130 +1,104 @@
 # Mnemark
 
-**[English](README.md) | [繁體中文](README.zh-TW.md)**
+**[繁體中文](README.md)（目前頁面） | [English](README.en.md)**
 
 <p align="center">
   <img src="mnemark_icon.svg" alt="Mnemark" width="128" />
 </p>
 
 <p align="center">
-  <strong>Find anything you've copied.</strong><br />
-  <sub>Pronounced /ˈniː.mɑːrk/ — “NEE-mark”. The name joins <em>mneme</em> (memory) and <em>mark</em>.</sub>
+  <strong>找到任何你複製過的內容。</strong><br />
+  <sub>發音 /ˈniː.mɑːrk/ — 「NEE-mark」。名稱結合 <em>mneme</em>（記憶）與 <em>mark</em>（標記）。</sub>
 </p>
 
-Everything you copy leaves a mark — Mnemark keeps those marks searchable, so you can always find your way back to something you've copied before.
+你複製的每一件事都會留下痕跡——Mnemark 讓這些痕跡可被搜尋，讓你能隨時找回曾複製過的內容。
 
-Mnemark is a Windows 10/11 clipboard manager built with Tauri 2. Press a global shortcut to open a compact floating panel, search recent clips, and paste one back into the app you were using.
+Mnemark 是 Windows 剪貼簿管理工具。按下全域快捷鍵即可開啟精簡的浮動面板，搜尋近期內容，再貼回原本使用的應用程式。
 
-It is available as an NSIS installer with background updates or as a portable executable with no installation or registry writes.
+## 系統需求
 
-## Features
+- 64 位元 Windows 10 或 Windows 11
 
-- Capture text, images, and copied file paths
-- Search clip content and source application instantly
-- Navigate with the keyboard, with optional `j` / `k` Vim controls
-- Pin up to 10 clips so capacity limits never evict them
-- Paste into the previously focused app or copy without closing the panel
-- Paste copied files as actual files (`CF_HDROP`) or as path text
-- Undo deleted clips within 3 seconds
-- Configure history limits, hotkey, theme, language, and capture debounce
-- Exclude clipboard content copied from selected applications
-- Pause monitoring from the system tray
-- Optionally persist history in SQLite
-- Use Traditional Chinese or English throughout the interface
+Mnemark 需要 Microsoft Edge WebView2 Runtime。Windows 11 與多數已更新的 Windows 10 已內建；若系統較舊或為精簡版，可從 [Microsoft 官方網站](https://developer.microsoft.com/microsoft-edge/webview2/)免費安裝。
 
-## Requirements
+## 下載
 
-- Windows 10 or Windows 11, 64-bit
-- [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+請從 [GitHub Releases](https://github.com/LiuTouo/Mnemark/releases/latest) 下載最新版：
 
-WebView2 is included with Windows 11 and most current Windows 10 installations. Stripped-down or LTSC systems may need the Evergreen installer.
-
-## Download
-
-Download the latest version from [GitHub Releases](https://github.com/LiuTouo/Mnemark/releases/latest):
-
-| Edition | Choose this if | Updates | Data location |
+| 版本 | 適合情境 | 更新方式 | 資料位置 |
 | --- | --- | --- | --- |
-| NSIS installer (`*-setup.exe`) | You want a conventional installation | Downloads and installs signed updates in the background when automatic updates are enabled | `%APPDATA%\Mnemark` |
-| Portable (`*-portable.exe`) | You want a standalone executable | Checks and downloads a signed replacement from the About window; you replace the running executable manually | Next to the executable |
+| 安裝版（`*-setup.exe`） | 想要一般安裝流程 | 啟用自動更新後，在背景下載並安裝簽署過的更新 | `%APPDATA%\Mnemark` |
+| 可攜版（`*-portable.exe`） | 想要免安裝的單一執行檔 | 從「關於」視窗檢查並下載新版執行檔，再手動取代舊檔 | 執行檔同一資料夾 |
 
-The portable edition does not require installation and does not use a registry `Run` entry. Optional startup uses a shortcut in `shell:startup`.
+可攜版不需要安裝，也不寫入登錄檔。兩種版本都可以設定開機自動啟動。
 
-## Quick start
+## 快速開始
 
-1. Download and run either edition.
-2. Mnemark starts in the system tray without opening a main window.
-3. Copy text, an image, or files as usual.
-4. Press `Ctrl+Shift+V` to open clipboard history.
-5. Select a clip to paste it into the application you were using.
+1. 下載並執行安裝版或可攜版。
+2. Mnemark 會常駐在系統匣，不出現主視窗。
+3. 照常複製文字、圖片或檔案。
+4. 按 `Ctrl+Shift+V` 開啟剪貼簿歷史。
+5. 選取一則項目，貼回原本使用的應用程式。
 
-The global shortcut can be changed in Settings. If another application already owns the selected shortcut, Mnemark opens Settings and asks you to choose a different combination.
+全域快捷鍵可在設定中變更。如果選定的快捷鍵已被其他程式占用，Mnemark 會開啟設定，請你改用其他組合。
 
-## Usage
+## 功能
 
-| Action | Result |
+- 記錄文字、圖片與複製的檔案
+- 即時搜尋項目內容與來源應用程式
+- 完整鍵盤操作，並可選用 `j`／`k` 瀏覽方式
+- 釘選重要項目（最多 10 則），不受容量限制淘汰
+- 貼回原應用程式，或只複製而不關閉面板
+- 抽屜分類：把項目拖放進不同抽屜，分門別類保存
+- 選擇是否長期保存歷史（持久化）
+- 排除指定程式（如密碼管理器）所複製的內容
+- 從系統匣暫停記錄
+- 介面支援繁體中文與英文
+- 主題與透明度可調整
+
+## 核心操作
+
+| 操作 | 結果 |
 | --- | --- |
-| `Ctrl+Shift+V` | Open or close the history panel |
-| Arrow keys or `j` / `k` | Move through clips (`j` / `k` requires Vim mode) |
-| `Enter` or click a clip | Paste the selected clip and close the panel |
-| `Esc` or click outside | Close the panel |
-| Pin | Keep a clip at the top and protect it from automatic eviction |
-| Copy | Put a clip on the clipboard without closing the panel |
-| Delete | Remove a clip and show a 3-second undo action |
-| Tray menu | Pause monitoring, open Settings or About, or quit |
+| `Ctrl+Shift+V` | 開啟或關閉歷史面板 |
+| 方向鍵或 `j`／`k` | 在項目間移動（`j`／`k` 需先在設定中啟用） |
+| `Enter` 或點擊項目 | 貼上選取內容並關閉面板 |
+| `Space` | 切換所選項目的預覽 |
+| `Esc` 或點擊面板外 | 關閉面板 |
+| 釘選 | 將項目保留在頂部，避免被自動淘汰 |
+| 複製 | 將項目放入剪貼簿，但不關閉面板 |
+| 刪除 | 移除項目，並提供 3 秒內復原 |
+| 系統匣選單 | 暫停記錄、開啟設定或關於視窗，或結束程式 |
 
-Search matches clip previews, source application names, and source window titles without case sensitivity.
+搜尋會比對項目預覽、來源程式名稱與來源視窗標題，不區分大小寫。
 
-For file entries, the default behavior writes an actual Windows file-drop clipboard format, so pasting works like copying files in File Explorer. The original files must still exist. This behavior can be changed to paste path text instead.
+檔案項目預設會以實際檔案格式貼上，行為等同在檔案總管複製檔案（原始檔案必須仍存在）；也可在設定中改為貼上路徑文字。
 
-## Data and privacy
+## 抽屜
 
-- Clipboard history is kept in memory by default and is lost when Mnemark exits.
-- Enabling persistence writes history to `mnemark.db`. Disabling it deletes that database.
-- Portable configuration and data are stored next to the executable; installed builds use `%APPDATA%\Mnemark`.
-- The default exclusion list contains `1Password.exe`, `Bitwarden.exe`, and `KeePass.exe`. Clips copied while one of these applications is in the foreground are discarded.
-- Copies made while monitoring is paused are discarded and are not captured after monitoring resumes.
-- Text and image history limits are configurable. When a limit is exceeded, the oldest unpinned clips are removed first.
+按左 `Alt`（預設，可在設定中變更）或點擊歷史面板右上角的星號，即可開啟或關閉抽屜介面。
 
-## Known limitations
+- 建立多個抽屜，重新命名、刪除與拖曳排序
+- 把歷史項目拖放進抽屜保存；同一抽屜不會出現重複項目
+- 在抽屜中瀏覽、搜尋、預覽、複製與貼上，操作方式與歷史面板相同
+- 隨時切換回完整歷史紀錄
 
-- A non-elevated Mnemark process cannot inject paste input into an application running as administrator because Windows UIPI blocks it. The selected content remains on the clipboard, so you can paste it manually with `Ctrl+V`.
-- Application exclusion is based on the foreground application at copy time. Password-manager autofill cannot be identified when the password manager itself is not the foreground application.
-- File history stores references to paths, not copies of file contents. Pasting files as files fails if the source files were moved or deleted.
+## 資料與隱私
 
-## Build from source
+- 剪貼簿歷史預設只保留在記憶體，Mnemark 結束後即消失。
+- 在設定中啟用持久化後，歷史會寫入 `mnemark.db` 檔案；停用持久化時，已保存的歷史資料會一併刪除。
+- 安裝版的設定與資料位於 `%APPDATA%\Mnemark`；可攜版位於執行檔旁。
+- 預設排除 1Password、Bitwarden 與 KeePass：這些程式在前景時複製的內容不會被記錄。你也可以自行增減排除清單。
+- 暫停記錄期間複製的內容會被捨棄，恢復後不會補抓。
+- 文字與圖片歷史容量可調整。超過限制時，優先移除最舊且未釘選的項目。
 
-Install [Node.js](https://nodejs.org/), [Rust](https://rustup.rs/), and the Windows prerequisites required by Tauri 2, then run:
+## 已知限制
 
-```powershell
-git clone https://github.com/LiuTouo/Mnemark.git
-cd Mnemark
-npm ci
-npm run build:app
-```
+- 以系統管理員身分執行的視窗（如某些工作管理員、終端機）有較高權限，Mnemark 無法自動貼入。此時內容仍會留在剪貼簿，你可以在該視窗內手動按 `Ctrl+V` 貼上。
+- 程式排除以複製當下的前景程式判斷。若密碼管理器不在前景（例如瀏覽器擴充套件自動填入），無法辨識其來源。
+- 檔案歷史只保存路徑參照，不會複製檔案內容。來源檔案已移動或刪除時，便無法貼成實際檔案。
 
-The release executable is written to `src-tauri/target/release/mnemark.exe`. Use `npm run build:app` for production builds because it enables Tauri's required `custom-protocol` feature.
+## 更多資訊
 
-For development with hot reload:
-
-```powershell
-npm run tauri dev
-```
-
-Useful validation commands:
-
-```powershell
-npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml
-```
-
-## Documentation
-
-- [Changelog](CHANGELOG.md)
-- [Behavior and domain reference](CONTEXT.md)
-- [Architecture decision records](docs/adr/README.md)
-
-## License
-
-Mnemark is distributed under the [GNU General Public License v3.0](LICENSE).
+- [更新日誌](CHANGELOG.md)
+- [授權條款](LICENSE)（GNU General Public License v3.0）
